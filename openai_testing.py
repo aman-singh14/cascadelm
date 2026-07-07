@@ -1,2 +1,0 @@
-api_key = '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'
-
