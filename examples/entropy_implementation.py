@@ -2,7 +2,7 @@ from openai import OpenAI
 from dataclasses import dataclass, field
 import math
 
-client = OpenAI(api_key="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")
+client = OpenAI(api_key="")
 
 def token_entropy(top_logprobs: list[tuple[str, float]]) -> float:
     entropy = 0.0
