@@ -1,0 +1,446 @@
+[
+  {
+    "id": "deb_com_000",
+    "phase": "debugging",
+    "complexity": "complex",
+    "expected_tier": 2,
+    "files_read": [
+      "backend/app/crud.py",
+      "backend/app/core/security.py",
+      "backend/app/api/routes/users.py"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a coding agent working inside fastapi/full-stack-fastapi-template (commit cd83fc1, MIT licence). You have access to read_file and edit_file tools. The stack is: FastAPI + SQLModel + PostgreSQL backend, React + TypeScript + TanStack Query frontend, Docker Compose deployment."
+      },
+      {
+        "role": "user",
+        "content": "The user registration API returns 500, but the input data seems fine. What could be causing this?"
+      },
+      {
+        "role": "assistant",
+        "content": "Let me check the crud module to see how user creation is handled.",
+        "tool_calls": [
+          {
+            "id": "call_read_0",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/crud.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/crud.py'>\nimport uuid\nfrom typing import Any\n\nfrom sqlmodel import Session, select\n\nfrom app.core.security import get_password_hash, verify_password\nfrom app.models import Item, ItemCreate, User, UserCreate, UserUpdate\n\n\ndef create_user(*, session: Session, user_create: UserCreate) -> User:\n    db_obj = User.model_validate(\n        user_create, update={\"hashed_password\": get_password_hash(user_create.password)}\n    )\n    session.add(db_obj)\n    session.commit()\n    session.refresh(db_obj)\n    return db_obj\n\n\ndef update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:\n    user_data = user_in.model_dump(exclude_unset=True)\n    extra_data = {}\n    if \"password\" in user_data:\n        password = user_data[\"password\"]\n        hashed_password = get_password_hash(password)\n        extra_data[\"hashed_password\"] = hashed_password\n    db_user.sqlmodel_update(user_data, update=extra_data)\n    session.add(db_user)\n    session.commit()\n    session.refresh(db_user)\n    return db_user\n\n\ndef get_user_by_email(*, session: Session, email: str) -> User | None:\n    statement = select(User).where(User.email == email)\n    session_user = session.exec(statement).first()\n    return session_user\n\n\nDUMMY_HASH = \"$argon2id$v=19$m=65536,t=3,p=4$MjQyZWE1MzBjYjJlZTI0Yw$YTU4NGM5ZTZmYjE2NzZlZjY0ZWY3ZGRkY2U2OWFjNjk\"\n\n\ndef authenticate(*, session: Session, email: str, password: str) -> User | None:\n    db_user = get_user_by_email(session=session, email=email)\n    if not db_user:\n        verify_password(password, DUMMY_HASH)\n        return None\n    verified, updated_password_hash = verify_password(password, db_user.hashed_password)\n    if not verified:\n        return None\n    if updated_password_hash:\n        db_user.hashed_password = updated_password_hash\n        session.add(db_user)\n        session.commit()\n        session.refresh(db_user)\n    return db_user\n\n\ndef create_item(*, session: Session, item_in: ItemCreate, owner_id: uuid.UUID) -> Item:\n    db_item = Item.model_validate(item_in, update={\"owner_id\": owner_id})\n    session.add(db_item)\n    session.commit()\n    session.refresh(db_item)\n    return db_item\n\n</file>",
+        "tool_call_id": "call_read_0"
+      },
+      {
+        "role": "assistant",
+        "content": "I need to verify if there's an issue with password hashing or validation during registration.",
+        "tool_calls": [
+          {
+            "id": "call_read_1",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/core/security.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/core/security.py'>\nfrom datetime import UTC, datetime, timedelta\nfrom typing import Any\n\nimport jwt\nfrom pwdlib import PasswordHash\nfrom pwdlib.hashers.argon2 import Argon2Hasher\nfrom pwdlib.hashers.bcrypt import BcryptHasher\n\nfrom app.core.config import settings\n\npassword_hash = PasswordHash(\n    (\n        Argon2Hasher(),\n        BcryptHasher(),\n    )\n)\n\nALGORITHM = \"HS256\"\n\ndef create_access_token(subject: str | Any, expires_delta: timedelta) -> str:\n    expire = datetime.now(UTC) + expires_delta\n    to_encode = {\"exp\": expire, \"sub\": str(subject)}\n    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)\n    return encoded_jwt\n\ndef verify_password(plain_password: str, hashed_password: str) -> tuple[bool, str | None]:\n    return password_hash.verify_and_update(plain_password, hashed_password)\n\ndef get_password_hash(password: str) -> str:\n    return password_hash.hash(password)\n\n</file>",
+        "tool_call_id": "call_read_1"
+      },
+      {
+        "role": "assistant",
+        "content": "I'm reviewing the user registration route to understand the flow and see where it might fail.",
+        "tool_calls": [
+          {
+            "id": "call_read_2",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/api/routes/users.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/api/routes/users.py'>\nimport uuid\nfrom typing import Any\n\nfrom fastapi import APIRouter, Depends, HTTPException\nfrom sqlmodel import col, delete, func, select\n\nfrom app import crud\nfrom app.api.deps import CurrentUser, SessionDep, get_current_active_superuser\nfrom app.core.config import settings\nfrom app.core.security import get_password_hash, verify_password\nfrom app.models import (\n    Item, Message, UpdatePassword, User, UserCreate,\n    UserPublic, UserRegister, UsersPublic, UserUpdate, UserUpdateMe,\n)\nfrom app.utils import generate_new_account_email, send_email\n\nrouter = APIRouter(prefix=\"/users\", tags=[\"users\"])\n\n@router.get(\"/\", dependencies=[Depends(get_current_active_superuser)], response_model=UsersPublic)\ndef read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:\n    count_statement = select(func.count()).select_from(User)\n    count = session.exec(count_statement).one()\n    statement = select(User).order_by(col(User.created_at).desc()).offset(skip).limit(limit)\n    users = session.exec(statement).all()\n    users_public = [UserPublic.model_validate(user) for user in users]\n    return UsersPublic(data=users_public, count=count)\n\n@router.patch(\"/me/password\", response_model=Message)\ndef update_password_me(*, session: SessionDep, body: UpdatePassword, current_user: CurrentUser) -> Any:\n    verified, _ = verify_password(body.current_password, current_user.hashed_password)\n    if not verified:\n        raise HTTPException(status_code=400, detail=\"Incorrect password\")\n    if body.current_password == body.new_password:\n        raise HTTPException(status_code=400, detail=\"New password cannot be the same as the current one\")\n    hashed_password = get_password_hash(body.new_password)\n    current_user.hashed_password = hashed_password\n    session.add(current_user)\n    session.commit()\n    return Message(message=\"Password updated successfully\")\n\n@router.post(\"/signup\", response_model=UserPublic)\ndef register_user(session: SessionDep, user_in: UserRegister) -> Any:\n    user = crud.get_user_by_email(session=session, email=user_in.email)\n    if user:\n        raise HTTPException(status_code=400, detail=\"The user with this email already exists in the system\")\n    user_create = UserCreate.model_validate(user_in)\n    user = crud.create_user(session=session, user_create=user_create)\n    return user\n\n@router.delete(\"/{user_id}\", dependencies=[Depends(get_current_active_superuser)])\ndef delete_user(session: SessionDep, current_user: CurrentUser, user_id: uuid.UUID) -> Message:\n    user = session.get(User, user_id)\n    if not user:\n        raise HTTPException(status_code=404, detail=\"User not found\")\n    if user == current_user:\n        raise HTTPException(status_code=403, detail=\"Super users are not allowed to delete themselves\")\n    statement = delete(Item).where(col(Item.owner_id) == user_id)\n    session.exec(statement)\n    session.delete(user)\n    session.commit()\n    return Message(message=\"User deleted successfully\")\n\n</file>",
+        "tool_call_id": "call_read_2"
+      }
+    ],
+    "ground_truth": [
+      "create_user",
+      "hash_password",
+      "SQLModel",
+      "HTTPException",
+      "UserCreate"
+    ],
+    "routing_rationale": "This turn requires tier 2 because identifying the root cause of the 500 error involves understanding complex interactions between user input validation, database operations, and possibly security functions. A cheaper model might miss subtle issues like incorrect exception handling or SQLModel usage that could lead to the server error.",
+    "needs_review": true,
+    "reviewed": false,
+    "keep": null
+  },
+  {
+    "id": "deb_com_001",
+    "phase": "debugging",
+    "complexity": "complex",
+    "expected_tier": 2,
+    "files_read": [
+      "backend/app/crud.py",
+      "backend/app/core/security.py",
+      "backend/app/api/routes/users.py"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a coding agent working inside fastapi/full-stack-fastapi-template (commit cd83fc1, MIT licence). You have access to read_file and edit_file tools. The stack is: FastAPI + SQLModel + PostgreSQL backend, React + TypeScript + TanStack Query frontend, Docker Compose deployment."
+      },
+      {
+        "role": "user",
+        "content": "I'm getting a 500 error when trying to update a user profile, but the logs don't show any clear errors."
+      },
+      {
+        "role": "assistant",
+        "content": "Let me check the crud module to see how the user update operation is implemented.",
+        "tool_calls": [
+          {
+            "id": "call_read_0",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/crud.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/crud.py'>\nimport uuid\nfrom typing import Any\n\nfrom sqlmodel import Session, select\n\nfrom app.core.security import get_password_hash, verify_password\nfrom app.models import Item, ItemCreate, User, UserCreate, UserUpdate\n\n\ndef create_user(*, session: Session, user_create: UserCreate) -> User:\n    db_obj = User.model_validate(\n        user_create, update={\"hashed_password\": get_password_hash(user_create.password)}\n    )\n    session.add(db_obj)\n    session.commit()\n    session.refresh(db_obj)\n    return db_obj\n\n\ndef update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:\n    user_data = user_in.model_dump(exclude_unset=True)\n    extra_data = {}\n    if \"password\" in user_data:\n        password = user_data[\"password\"]\n        hashed_password = get_password_hash(password)\n        extra_data[\"hashed_password\"] = hashed_password\n    db_user.sqlmodel_update(user_data, update=extra_data)\n    session.add(db_user)\n    session.commit()\n    session.refresh(db_user)\n    return db_user\n\n\ndef get_user_by_email(*, session: Session, email: str) -> User | None:\n    statement = select(User).where(User.email == email)\n    session_user = session.exec(statement).first()\n    return session_user\n\n\nDUMMY_HASH = \"$argon2id$v=19$m=65536,t=3,p=4$MjQyZWE1MzBjYjJlZTI0Yw$YTU4NGM5ZTZmYjE2NzZlZjY0ZWY3ZGRkY2U2OWFjNjk\"\n\n\ndef authenticate(*, session: Session, email: str, password: str) -> User | None:\n    db_user = get_user_by_email(session=session, email=email)\n    if not db_user:\n        verify_password(password, DUMMY_HASH)\n        return None\n    verified, updated_password_hash = verify_password(password, db_user.hashed_password)\n    if not verified:\n        return None\n    if updated_password_hash:\n        db_user.hashed_password = updated_password_hash\n        session.add(db_user)\n        session.commit()\n        session.refresh(db_user)\n    return db_user\n\n\ndef create_item(*, session: Session, item_in: ItemCreate, owner_id: uuid.UUID) -> Item:\n    db_item = Item.model_validate(item_in, update={\"owner_id\": owner_id})\n    session.add(db_item)\n    session.commit()\n    session.refresh(db_item)\n    return db_item\n\n</file>",
+        "tool_call_id": "call_read_0"
+      },
+      {
+        "role": "assistant",
+        "content": "I need to verify if there's any security-related logic that might be affecting the user update endpoint.",
+        "tool_calls": [
+          {
+            "id": "call_read_1",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/core/security.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/core/security.py'>\nfrom datetime import UTC, datetime, timedelta\nfrom typing import Any\n\nimport jwt\nfrom pwdlib import PasswordHash\nfrom pwdlib.hashers.argon2 import Argon2Hasher\nfrom pwdlib.hashers.bcrypt import BcryptHasher\n\nfrom app.core.config import settings\n\npassword_hash = PasswordHash(\n    (\n        Argon2Hasher(),\n        BcryptHasher(),\n    )\n)\n\nALGORITHM = \"HS256\"\n\ndef create_access_token(subject: str | Any, expires_delta: timedelta) -> str:\n    expire = datetime.now(UTC) + expires_delta\n    to_encode = {\"exp\": expire, \"sub\": str(subject)}\n    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)\n    return encoded_jwt\n\ndef verify_password(plain_password: str, hashed_password: str) -> tuple[bool, str | None]:\n    return password_hash.verify_and_update(plain_password, hashed_password)\n\ndef get_password_hash(password: str) -> str:\n    return password_hash.hash(password)\n\n</file>",
+        "tool_call_id": "call_read_1"
+      },
+      {
+        "role": "assistant",
+        "content": "I want to examine the user routes to understand how requests to update profiles are being routed and handled.",
+        "tool_calls": [
+          {
+            "id": "call_read_2",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/api/routes/users.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/api/routes/users.py'>\nimport uuid\nfrom typing import Any\n\nfrom fastapi import APIRouter, Depends, HTTPException\nfrom sqlmodel import col, delete, func, select\n\nfrom app import crud\nfrom app.api.deps import CurrentUser, SessionDep, get_current_active_superuser\nfrom app.core.config import settings\nfrom app.core.security import get_password_hash, verify_password\nfrom app.models import (\n    Item, Message, UpdatePassword, User, UserCreate,\n    UserPublic, UserRegister, UsersPublic, UserUpdate, UserUpdateMe,\n)\nfrom app.utils import generate_new_account_email, send_email\n\nrouter = APIRouter(prefix=\"/users\", tags=[\"users\"])\n\n@router.get(\"/\", dependencies=[Depends(get_current_active_superuser)], response_model=UsersPublic)\ndef read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:\n    count_statement = select(func.count()).select_from(User)\n    count = session.exec(count_statement).one()\n    statement = select(User).order_by(col(User.created_at).desc()).offset(skip).limit(limit)\n    users = session.exec(statement).all()\n    users_public = [UserPublic.model_validate(user) for user in users]\n    return UsersPublic(data=users_public, count=count)\n\n@router.patch(\"/me/password\", response_model=Message)\ndef update_password_me(*, session: SessionDep, body: UpdatePassword, current_user: CurrentUser) -> Any:\n    verified, _ = verify_password(body.current_password, current_user.hashed_password)\n    if not verified:\n        raise HTTPException(status_code=400, detail=\"Incorrect password\")\n    if body.current_password == body.new_password:\n        raise HTTPException(status_code=400, detail=\"New password cannot be the same as the current one\")\n    hashed_password = get_password_hash(body.new_password)\n    current_user.hashed_password = hashed_password\n    session.add(current_user)\n    session.commit()\n    return Message(message=\"Password updated successfully\")\n\n@router.post(\"/signup\", response_model=UserPublic)\ndef register_user(session: SessionDep, user_in: UserRegister) -> Any:\n    user = crud.get_user_by_email(session=session, email=user_in.email)\n    if user:\n        raise HTTPException(status_code=400, detail=\"The user with this email already exists in the system\")\n    user_create = UserCreate.model_validate(user_in)\n    user = crud.create_user(session=session, user_create=user_create)\n    return user\n\n@router.delete(\"/{user_id}\", dependencies=[Depends(get_current_active_superuser)])\ndef delete_user(session: SessionDep, current_user: CurrentUser, user_id: uuid.UUID) -> Message:\n    user = session.get(User, user_id)\n    if not user:\n        raise HTTPException(status_code=404, detail=\"User not found\")\n    if user == current_user:\n        raise HTTPException(status_code=403, detail=\"Super users are not allowed to delete themselves\")\n    statement = delete(Item).where(col(Item.owner_id) == user_id)\n    session.exec(statement)\n    session.delete(user)\n    session.commit()\n    return Message(message=\"User deleted successfully\")\n\n</file>",
+        "tool_call_id": "call_read_2"
+      }
+    ],
+    "ground_truth": [
+      "update_user",
+      "try-except",
+      "get_user_by_id",
+      "commit",
+      "rollback"
+    ],
+    "routing_rationale": "This task involves diagnosing a complex issue with a 500 error in a user update operation, which requires an understanding of multiple interconnected components across the codebase. A tier 2 model is needed to understand the intricate logic and potential subtle bugs or misconfigurations that could elude a simpler model.",
+    "needs_review": true,
+    "reviewed": false,
+    "keep": null
+  },
+  {
+    "id": "deb_com_002",
+    "phase": "debugging",
+    "complexity": "complex",
+    "expected_tier": 2,
+    "files_read": [
+      "backend/app/crud.py",
+      "backend/app/core/security.py",
+      "backend/app/api/routes/users.py"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a coding agent working inside fastapi/full-stack-fastapi-template (commit cd83fc1, MIT licence). You have access to read_file and edit_file tools. The stack is: FastAPI + SQLModel + PostgreSQL backend, React + TypeScript + TanStack Query frontend, Docker Compose deployment."
+      },
+      {
+        "role": "user",
+        "content": "The user registration is failing when trying to save the new user to the database, throwing a 500 error."
+      },
+      {
+        "role": "assistant",
+        "content": "Let me check the crud module to see how the user creation logic is implemented.",
+        "tool_calls": [
+          {
+            "id": "call_read_0",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/crud.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/crud.py'>\nimport uuid\nfrom typing import Any\n\nfrom sqlmodel import Session, select\n\nfrom app.core.security import get_password_hash, verify_password\nfrom app.models import Item, ItemCreate, User, UserCreate, UserUpdate\n\n\ndef create_user(*, session: Session, user_create: UserCreate) -> User:\n    db_obj = User.model_validate(\n        user_create, update={\"hashed_password\": get_password_hash(user_create.password)}\n    )\n    session.add(db_obj)\n    session.commit()\n    session.refresh(db_obj)\n    return db_obj\n\n\ndef update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:\n    user_data = user_in.model_dump(exclude_unset=True)\n    extra_data = {}\n    if \"password\" in user_data:\n        password = user_data[\"password\"]\n        hashed_password = get_password_hash(password)\n        extra_data[\"hashed_password\"] = hashed_password\n    db_user.sqlmodel_update(user_data, update=extra_data)\n    session.add(db_user)\n    session.commit()\n    session.refresh(db_user)\n    return db_user\n\n\ndef get_user_by_email(*, session: Session, email: str) -> User | None:\n    statement = select(User).where(User.email == email)\n    session_user = session.exec(statement).first()\n    return session_user\n\n\nDUMMY_HASH = \"$argon2id$v=19$m=65536,t=3,p=4$MjQyZWE1MzBjYjJlZTI0Yw$YTU4NGM5ZTZmYjE2NzZlZjY0ZWY3ZGRkY2U2OWFjNjk\"\n\n\ndef authenticate(*, session: Session, email: str, password: str) -> User | None:\n    db_user = get_user_by_email(session=session, email=email)\n    if not db_user:\n        verify_password(password, DUMMY_HASH)\n        return None\n    verified, updated_password_hash = verify_password(password, db_user.hashed_password)\n    if not verified:\n        return None\n    if updated_password_hash:\n        db_user.hashed_password = updated_password_hash\n        session.add(db_user)\n        session.commit()\n        session.refresh(db_user)\n    return db_user\n\n\ndef create_item(*, session: Session, item_in: ItemCreate, owner_id: uuid.UUID) -> Item:\n    db_item = Item.model_validate(item_in, update={\"owner_id\": owner_id})\n    session.add(db_item)\n    session.commit()\n    session.refresh(db_item)\n    return db_item\n\n</file>",
+        "tool_call_id": "call_read_0"
+      },
+      {
+        "role": "assistant",
+        "content": "I want to verify how password hashing is handled, as it might be affecting the user data integrity.",
+        "tool_calls": [
+          {
+            "id": "call_read_1",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/core/security.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/core/security.py'>\nfrom datetime import UTC, datetime, timedelta\nfrom typing import Any\n\nimport jwt\nfrom pwdlib import PasswordHash\nfrom pwdlib.hashers.argon2 import Argon2Hasher\nfrom pwdlib.hashers.bcrypt import BcryptHasher\n\nfrom app.core.config import settings\n\npassword_hash = PasswordHash(\n    (\n        Argon2Hasher(),\n        BcryptHasher(),\n    )\n)\n\nALGORITHM = \"HS256\"\n\ndef create_access_token(subject: str | Any, expires_delta: timedelta) -> str:\n    expire = datetime.now(UTC) + expires_delta\n    to_encode = {\"exp\": expire, \"sub\": str(subject)}\n    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)\n    return encoded_jwt\n\ndef verify_password(plain_password: str, hashed_password: str) -> tuple[bool, str | None]:\n    return password_hash.verify_and_update(plain_password, hashed_password)\n\ndef get_password_hash(password: str) -> str:\n    return password_hash.hash(password)\n\n</file>",
+        "tool_call_id": "call_read_1"
+      },
+      {
+        "role": "assistant",
+        "content": "I need to look at the user route to understand the endpoint logic for registration.",
+        "tool_calls": [
+          {
+            "id": "call_read_2",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/api/routes/users.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/api/routes/users.py'>\nimport uuid\nfrom typing import Any\n\nfrom fastapi import APIRouter, Depends, HTTPException\nfrom sqlmodel import col, delete, func, select\n\nfrom app import crud\nfrom app.api.deps import CurrentUser, SessionDep, get_current_active_superuser\nfrom app.core.config import settings\nfrom app.core.security import get_password_hash, verify_password\nfrom app.models import (\n    Item, Message, UpdatePassword, User, UserCreate,\n    UserPublic, UserRegister, UsersPublic, UserUpdate, UserUpdateMe,\n)\nfrom app.utils import generate_new_account_email, send_email\n\nrouter = APIRouter(prefix=\"/users\", tags=[\"users\"])\n\n@router.get(\"/\", dependencies=[Depends(get_current_active_superuser)], response_model=UsersPublic)\ndef read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:\n    count_statement = select(func.count()).select_from(User)\n    count = session.exec(count_statement).one()\n    statement = select(User).order_by(col(User.created_at).desc()).offset(skip).limit(limit)\n    users = session.exec(statement).all()\n    users_public = [UserPublic.model_validate(user) for user in users]\n    return UsersPublic(data=users_public, count=count)\n\n@router.patch(\"/me/password\", response_model=Message)\ndef update_password_me(*, session: SessionDep, body: UpdatePassword, current_user: CurrentUser) -> Any:\n    verified, _ = verify_password(body.current_password, current_user.hashed_password)\n    if not verified:\n        raise HTTPException(status_code=400, detail=\"Incorrect password\")\n    if body.current_password == body.new_password:\n        raise HTTPException(status_code=400, detail=\"New password cannot be the same as the current one\")\n    hashed_password = get_password_hash(body.new_password)\n    current_user.hashed_password = hashed_password\n    session.add(current_user)\n    session.commit()\n    return Message(message=\"Password updated successfully\")\n\n@router.post(\"/signup\", response_model=UserPublic)\ndef register_user(session: SessionDep, user_in: UserRegister) -> Any:\n    user = crud.get_user_by_email(session=session, email=user_in.email)\n    if user:\n        raise HTTPException(status_code=400, detail=\"The user with this email already exists in the system\")\n    user_create = UserCreate.model_validate(user_in)\n    user = crud.create_user(session=session, user_create=user_create)\n    return user\n\n@router.delete(\"/{user_id}\", dependencies=[Depends(get_current_active_superuser)])\ndef delete_user(session: SessionDep, current_user: CurrentUser, user_id: uuid.UUID) -> Message:\n    user = session.get(User, user_id)\n    if not user:\n        raise HTTPException(status_code=404, detail=\"User not found\")\n    if user == current_user:\n        raise HTTPException(status_code=403, detail=\"Super users are not allowed to delete themselves\")\n    statement = delete(Item).where(col(Item.owner_id) == user_id)\n    session.exec(statement)\n    session.delete(user)\n    session.commit()\n    return Message(message=\"User deleted successfully\")\n\n</file>",
+        "tool_call_id": "call_read_2"
+      }
+    ],
+    "ground_truth": [
+      "create_user",
+      "hash_password",
+      "IntegrityError",
+      "UserCreate",
+      "session.commit"
+    ],
+    "routing_rationale": "This issue is complex due to the interplay between the database operations, password hashing, and API routing, requiring a nuanced understanding of the full-stack interactions. A cheaper model might miss the subtle interaction between these components, leading to an incorrect diagnosis or fix.",
+    "needs_review": true,
+    "reviewed": false,
+    "keep": null
+  },
+  {
+    "id": "deb_com_003",
+    "phase": "debugging",
+    "complexity": "complex",
+    "expected_tier": 2,
+    "files_read": [
+      "backend/app/crud.py",
+      "backend/app/core/security.py",
+      "backend/app/api/routes/users.py"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a coding agent working inside fastapi/full-stack-fastapi-template (commit cd83fc1, MIT licence). You have access to read_file and edit_file tools. The stack is: FastAPI + SQLModel + PostgreSQL backend, React + TypeScript + TanStack Query frontend, Docker Compose deployment."
+      },
+      {
+        "role": "user",
+        "content": "I'm seeing an unexpected 500 error when trying to create a new user \u2014 what could be causing this?"
+      },
+      {
+        "role": "assistant",
+        "content": "Let me check the crud module to see how user creation is implemented.",
+        "tool_calls": [
+          {
+            "id": "call_read_0",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/crud.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/crud.py'>\nimport uuid\nfrom typing import Any\n\nfrom sqlmodel import Session, select\n\nfrom app.core.security import get_password_hash, verify_password\nfrom app.models import Item, ItemCreate, User, UserCreate, UserUpdate\n\n\ndef create_user(*, session: Session, user_create: UserCreate) -> User:\n    db_obj = User.model_validate(\n        user_create, update={\"hashed_password\": get_password_hash(user_create.password)}\n    )\n    session.add(db_obj)\n    session.commit()\n    session.refresh(db_obj)\n    return db_obj\n\n\ndef update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:\n    user_data = user_in.model_dump(exclude_unset=True)\n    extra_data = {}\n    if \"password\" in user_data:\n        password = user_data[\"password\"]\n        hashed_password = get_password_hash(password)\n        extra_data[\"hashed_password\"] = hashed_password\n    db_user.sqlmodel_update(user_data, update=extra_data)\n    session.add(db_user)\n    session.commit()\n    session.refresh(db_user)\n    return db_user\n\n\ndef get_user_by_email(*, session: Session, email: str) -> User | None:\n    statement = select(User).where(User.email == email)\n    session_user = session.exec(statement).first()\n    return session_user\n\n\nDUMMY_HASH = \"$argon2id$v=19$m=65536,t=3,p=4$MjQyZWE1MzBjYjJlZTI0Yw$YTU4NGM5ZTZmYjE2NzZlZjY0ZWY3ZGRkY2U2OWFjNjk\"\n\n\ndef authenticate(*, session: Session, email: str, password: str) -> User | None:\n    db_user = get_user_by_email(session=session, email=email)\n    if not db_user:\n        verify_password(password, DUMMY_HASH)\n        return None\n    verified, updated_password_hash = verify_password(password, db_user.hashed_password)\n    if not verified:\n        return None\n    if updated_password_hash:\n        db_user.hashed_password = updated_password_hash\n        session.add(db_user)\n        session.commit()\n        session.refresh(db_user)\n    return db_user\n\n\ndef create_item(*, session: Session, item_in: ItemCreate, owner_id: uuid.UUID) -> Item:\n    db_item = Item.model_validate(item_in, update={\"owner_id\": owner_id})\n    session.add(db_item)\n    session.commit()\n    session.refresh(db_item)\n    return db_item\n\n</file>",
+        "tool_call_id": "call_read_0"
+      },
+      {
+        "role": "assistant",
+        "content": "I need to examine the security module to ensure password hashing isn't causing the issue.",
+        "tool_calls": [
+          {
+            "id": "call_read_1",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/core/security.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/core/security.py'>\nfrom datetime import UTC, datetime, timedelta\nfrom typing import Any\n\nimport jwt\nfrom pwdlib import PasswordHash\nfrom pwdlib.hashers.argon2 import Argon2Hasher\nfrom pwdlib.hashers.bcrypt import BcryptHasher\n\nfrom app.core.config import settings\n\npassword_hash = PasswordHash(\n    (\n        Argon2Hasher(),\n        BcryptHasher(),\n    )\n)\n\nALGORITHM = \"HS256\"\n\ndef create_access_token(subject: str | Any, expires_delta: timedelta) -> str:\n    expire = datetime.now(UTC) + expires_delta\n    to_encode = {\"exp\": expire, \"sub\": str(subject)}\n    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)\n    return encoded_jwt\n\ndef verify_password(plain_password: str, hashed_password: str) -> tuple[bool, str | None]:\n    return password_hash.verify_and_update(plain_password, hashed_password)\n\ndef get_password_hash(password: str) -> str:\n    return password_hash.hash(password)\n\n</file>",
+        "tool_call_id": "call_read_1"
+      },
+      {
+        "role": "assistant",
+        "content": "I'll review the user routes to verify if the API endpoint is set up correctly.",
+        "tool_calls": [
+          {
+            "id": "call_read_2",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/api/routes/users.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/api/routes/users.py'>\nimport uuid\nfrom typing import Any\n\nfrom fastapi import APIRouter, Depends, HTTPException\nfrom sqlmodel import col, delete, func, select\n\nfrom app import crud\nfrom app.api.deps import CurrentUser, SessionDep, get_current_active_superuser\nfrom app.core.config import settings\nfrom app.core.security import get_password_hash, verify_password\nfrom app.models import (\n    Item, Message, UpdatePassword, User, UserCreate,\n    UserPublic, UserRegister, UsersPublic, UserUpdate, UserUpdateMe,\n)\nfrom app.utils import generate_new_account_email, send_email\n\nrouter = APIRouter(prefix=\"/users\", tags=[\"users\"])\n\n@router.get(\"/\", dependencies=[Depends(get_current_active_superuser)], response_model=UsersPublic)\ndef read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:\n    count_statement = select(func.count()).select_from(User)\n    count = session.exec(count_statement).one()\n    statement = select(User).order_by(col(User.created_at).desc()).offset(skip).limit(limit)\n    users = session.exec(statement).all()\n    users_public = [UserPublic.model_validate(user) for user in users]\n    return UsersPublic(data=users_public, count=count)\n\n@router.patch(\"/me/password\", response_model=Message)\ndef update_password_me(*, session: SessionDep, body: UpdatePassword, current_user: CurrentUser) -> Any:\n    verified, _ = verify_password(body.current_password, current_user.hashed_password)\n    if not verified:\n        raise HTTPException(status_code=400, detail=\"Incorrect password\")\n    if body.current_password == body.new_password:\n        raise HTTPException(status_code=400, detail=\"New password cannot be the same as the current one\")\n    hashed_password = get_password_hash(body.new_password)\n    current_user.hashed_password = hashed_password\n    session.add(current_user)\n    session.commit()\n    return Message(message=\"Password updated successfully\")\n\n@router.post(\"/signup\", response_model=UserPublic)\ndef register_user(session: SessionDep, user_in: UserRegister) -> Any:\n    user = crud.get_user_by_email(session=session, email=user_in.email)\n    if user:\n        raise HTTPException(status_code=400, detail=\"The user with this email already exists in the system\")\n    user_create = UserCreate.model_validate(user_in)\n    user = crud.create_user(session=session, user_create=user_create)\n    return user\n\n@router.delete(\"/{user_id}\", dependencies=[Depends(get_current_active_superuser)])\ndef delete_user(session: SessionDep, current_user: CurrentUser, user_id: uuid.UUID) -> Message:\n    user = session.get(User, user_id)\n    if not user:\n        raise HTTPException(status_code=404, detail=\"User not found\")\n    if user == current_user:\n        raise HTTPException(status_code=403, detail=\"Super users are not allowed to delete themselves\")\n    statement = delete(Item).where(col(Item.owner_id) == user_id)\n    session.exec(statement)\n    session.delete(user)\n    session.commit()\n    return Message(message=\"User deleted successfully\")\n\n</file>",
+        "tool_call_id": "call_read_2"
+      }
+    ],
+    "ground_truth": [
+      "create_user",
+      "UserCreate",
+      "Session",
+      "HTTPException"
+    ],
+    "routing_rationale": "This turn needs tier 2 because the bug involves multiple layers of the application stack, potentially involving database operations, business logic, and API endpoint configuration. A cheaper model might miss subtle interactions between these components that a more advanced model could catch.",
+    "needs_review": true,
+    "reviewed": false,
+    "keep": null
+  },
+  {
+    "id": "deb_com_004",
+    "phase": "debugging",
+    "complexity": "complex",
+    "expected_tier": 2,
+    "files_read": [
+      "backend/app/crud.py",
+      "backend/app/core/security.py",
+      "backend/app/api/routes/users.py"
+    ],
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are a coding agent working inside fastapi/full-stack-fastapi-template (commit cd83fc1, MIT licence). You have access to read_file and edit_file tools. The stack is: FastAPI + SQLModel + PostgreSQL backend, React + TypeScript + TanStack Query frontend, Docker Compose deployment."
+      },
+      {
+        "role": "user",
+        "content": "The user registration endpoint is throwing a 500 error when I try to create a new user."
+      },
+      {
+        "role": "assistant",
+        "content": "Let me check the crud module to see how user creation is handled.",
+        "tool_calls": [
+          {
+            "id": "call_read_0",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/crud.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/crud.py'>\nimport uuid\nfrom typing import Any\n\nfrom sqlmodel import Session, select\n\nfrom app.core.security import get_password_hash, verify_password\nfrom app.models import Item, ItemCreate, User, UserCreate, UserUpdate\n\n\ndef create_user(*, session: Session, user_create: UserCreate) -> User:\n    db_obj = User.model_validate(\n        user_create, update={\"hashed_password\": get_password_hash(user_create.password)}\n    )\n    session.add(db_obj)\n    session.commit()\n    session.refresh(db_obj)\n    return db_obj\n\n\ndef update_user(*, session: Session, db_user: User, user_in: UserUpdate) -> Any:\n    user_data = user_in.model_dump(exclude_unset=True)\n    extra_data = {}\n    if \"password\" in user_data:\n        password = user_data[\"password\"]\n        hashed_password = get_password_hash(password)\n        extra_data[\"hashed_password\"] = hashed_password\n    db_user.sqlmodel_update(user_data, update=extra_data)\n    session.add(db_user)\n    session.commit()\n    session.refresh(db_user)\n    return db_user\n\n\ndef get_user_by_email(*, session: Session, email: str) -> User | None:\n    statement = select(User).where(User.email == email)\n    session_user = session.exec(statement).first()\n    return session_user\n\n\nDUMMY_HASH = \"$argon2id$v=19$m=65536,t=3,p=4$MjQyZWE1MzBjYjJlZTI0Yw$YTU4NGM5ZTZmYjE2NzZlZjY0ZWY3ZGRkY2U2OWFjNjk\"\n\n\ndef authenticate(*, session: Session, email: str, password: str) -> User | None:\n    db_user = get_user_by_email(session=session, email=email)\n    if not db_user:\n        verify_password(password, DUMMY_HASH)\n        return None\n    verified, updated_password_hash = verify_password(password, db_user.hashed_password)\n    if not verified:\n        return None\n    if updated_password_hash:\n        db_user.hashed_password = updated_password_hash\n        session.add(db_user)\n        session.commit()\n        session.refresh(db_user)\n    return db_user\n\n\ndef create_item(*, session: Session, item_in: ItemCreate, owner_id: uuid.UUID) -> Item:\n    db_item = Item.model_validate(item_in, update={\"owner_id\": owner_id})\n    session.add(db_item)\n    session.commit()\n    session.refresh(db_item)\n    return db_item\n\n</file>",
+        "tool_call_id": "call_read_0"
+      },
+      {
+        "role": "assistant",
+        "content": "I want to verify how passwords are hashed and validated during registration.",
+        "tool_calls": [
+          {
+            "id": "call_read_1",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/core/security.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/core/security.py'>\nfrom datetime import UTC, datetime, timedelta\nfrom typing import Any\n\nimport jwt\nfrom pwdlib import PasswordHash\nfrom pwdlib.hashers.argon2 import Argon2Hasher\nfrom pwdlib.hashers.bcrypt import BcryptHasher\n\nfrom app.core.config import settings\n\npassword_hash = PasswordHash(\n    (\n        Argon2Hasher(),\n        BcryptHasher(),\n    )\n)\n\nALGORITHM = \"HS256\"\n\ndef create_access_token(subject: str | Any, expires_delta: timedelta) -> str:\n    expire = datetime.now(UTC) + expires_delta\n    to_encode = {\"exp\": expire, \"sub\": str(subject)}\n    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)\n    return encoded_jwt\n\ndef verify_password(plain_password: str, hashed_password: str) -> tuple[bool, str | None]:\n    return password_hash.verify_and_update(plain_password, hashed_password)\n\ndef get_password_hash(password: str) -> str:\n    return password_hash.hash(password)\n\n</file>",
+        "tool_call_id": "call_read_1"
+      },
+      {
+        "role": "assistant",
+        "content": "I need to examine the API logic for the user registration endpoint.",
+        "tool_calls": [
+          {
+            "id": "call_read_2",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\": \"backend/app/api/routes/users.py\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "content": "<file path='backend/app/api/routes/users.py'>\nimport uuid\nfrom typing import Any\n\nfrom fastapi import APIRouter, Depends, HTTPException\nfrom sqlmodel import col, delete, func, select\n\nfrom app import crud\nfrom app.api.deps import CurrentUser, SessionDep, get_current_active_superuser\nfrom app.core.config import settings\nfrom app.core.security import get_password_hash, verify_password\nfrom app.models import (\n    Item, Message, UpdatePassword, User, UserCreate,\n    UserPublic, UserRegister, UsersPublic, UserUpdate, UserUpdateMe,\n)\nfrom app.utils import generate_new_account_email, send_email\n\nrouter = APIRouter(prefix=\"/users\", tags=[\"users\"])\n\n@router.get(\"/\", dependencies=[Depends(get_current_active_superuser)], response_model=UsersPublic)\ndef read_users(session: SessionDep, skip: int = 0, limit: int = 100) -> Any:\n    count_statement = select(func.count()).select_from(User)\n    count = session.exec(count_statement).one()\n    statement = select(User).order_by(col(User.created_at).desc()).offset(skip).limit(limit)\n    users = session.exec(statement).all()\n    users_public = [UserPublic.model_validate(user) for user in users]\n    return UsersPublic(data=users_public, count=count)\n\n@router.patch(\"/me/password\", response_model=Message)\ndef update_password_me(*, session: SessionDep, body: UpdatePassword, current_user: CurrentUser) -> Any:\n    verified, _ = verify_password(body.current_password, current_user.hashed_password)\n    if not verified:\n        raise HTTPException(status_code=400, detail=\"Incorrect password\")\n    if body.current_password == body.new_password:\n        raise HTTPException(status_code=400, detail=\"New password cannot be the same as the current one\")\n    hashed_password = get_password_hash(body.new_password)\n    current_user.hashed_password = hashed_password\n    session.add(current_user)\n    session.commit()\n    return Message(message=\"Password updated successfully\")\n\n@router.post(\"/signup\", response_model=UserPublic)\ndef register_user(session: SessionDep, user_in: UserRegister) -> Any:\n    user = crud.get_user_by_email(session=session, email=user_in.email)\n    if user:\n        raise HTTPException(status_code=400, detail=\"The user with this email already exists in the system\")\n    user_create = UserCreate.model_validate(user_in)\n    user = crud.create_user(session=session, user_create=user_create)\n    return user\n\n@router.delete(\"/{user_id}\", dependencies=[Depends(get_current_active_superuser)])\ndef delete_user(session: SessionDep, current_user: CurrentUser, user_id: uuid.UUID) -> Message:\n    user = session.get(User, user_id)\n    if not user:\n        raise HTTPException(status_code=404, detail=\"User not found\")\n    if user == current_user:\n        raise HTTPException(status_code=403, detail=\"Super users are not allowed to delete themselves\")\n    statement = delete(Item).where(col(Item.owner_id) == user_id)\n    session.exec(statement)\n    session.delete(user)\n    session.commit()\n    return Message(message=\"User deleted successfully\")\n\n</file>",
+        "tool_call_id": "call_read_2"
+      }
+    ],
+    "ground_truth": [
+      "create_user",
+      "hash_password",
+      "Session",
+      "HTTPException",
+      "add_user"
+    ],
+    "routing_rationale": "This is a complex issue likely involving multiple layers of the stack, including potential database and security concerns. A cheaper model might miss subtle interactions between the layers, such as improper data handling or incorrect security measures.",
+    "needs_review": true,
+    "reviewed": false,
+    "keep": null
+  }
+]
