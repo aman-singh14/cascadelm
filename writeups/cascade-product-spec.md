@@ -28,10 +28,16 @@ Escalating the cell-3 tasks lifts success from **50% (always-cheap) to 77%**. Th
 |--------|---------------------------:|
 | verbalized confidence | 0.72 |
 | critique-first + self-consistency | 0.66 |
+| independent strong-model review | 0.63 |
+| objective behavioral cues | 0.61 |
 | issue-snippet reproduction | 0.56 |
 | **model-authored reproduction test** | **0.50 (chance)** |
 
-All weak; self-verification was *worst*, because **a cheap model writes a test that its own (possibly wrong) patch passes** — the test inherits the same misunderstanding that produced the bug. **A model cannot reliably grade its own work.**
+All weak; nothing beats bare confidence (~0.72). Two failures are especially telling:
+- **Self-verification (0.50):** a cheap model writes a test its own (possibly wrong) patch passes — the test inherits the misunderstanding that produced the bug.
+- **Independent strong review (0.63, and Goal B *inverted*):** even a stronger, uncorrelated reviewer can't do it — it rates *hopeless* near-miss patches **higher** than rescuable ones, because a plausible-looking patch fools a reviewer. "Looks correct" ≠ "passes the tests."
+
+**No LLM judgment — self or independent — reliably predicts patch correctness from issue+patch alone. Only running tests disambiguates a plausible patch from a correct one.**
 
 ## The product insight: link the user's tests
 
@@ -80,6 +86,7 @@ All in `benchmarks/cascade/`: `sample.py` (stratified sampler), `run.py` (cheap�
 
 ## Open questions / next
 
-- **Independent verifier** (a *different* model reviews the cheap patch) to break the self-grading correlation — the one untried lever for lifting the *fallback* signal above 0.72.
-- n=60 (and beyond) to tighten cell-3 and the confidence AUC.
-- Measure real-world test coverage rates to estimate how often the primary vs fallback path fires in practice.
+- ~~Independent verifier to lift the fallback above 0.72~~ — **tried (review.py), failed** (0.63, Goal B inverted). Combined with the four other signals, this closes the "improve the no-tests fallback" lever: the fallback is firmly capped ~0.72, so the product's value lives in the test-linked primary path.
+- n=60 (and beyond) to tighten cell-3 (currently 27% ±~13%) and confirm the ~0.72 fallback ceiling.
+- Measure real-world test-coverage rates to estimate how often the primary (test-linked) vs fallback (confidence) path fires in practice — this is the single biggest driver of the product's real-world value.
+- Wire the policy into the existing OpenAI-compatible proxy (`proxy.py`) as a `tests | confidence | hybrid` escalation mode.
