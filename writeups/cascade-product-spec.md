@@ -87,6 +87,6 @@ All in `benchmarks/cascade/`: `sample.py` (stratified sampler), `run.py` (cheap�
 ## Open questions / next
 
 - ~~Independent verifier to lift the fallback above 0.72~~ — **tried (review.py), failed** (0.63, Goal B inverted). Combined with the four other signals, this closes the "improve the no-tests fallback" lever: the fallback is firmly capped ~0.72, so the product's value lives in the test-linked primary path.
-- n=60 (and beyond) to tighten cell-3 (currently 27% ±~13%) and confirm the ~0.72 fallback ceiling.
+- ~~n=60 to tighten cell-3 and confirm the fallback ceiling~~ — **done**: cell-3 settled at 20% (from the n=30 spike of 27%); fallback confidence AUC confirmed at **0.733** (n=60), Goal B still ~chance/inverted (0.33). Beyond n=60 would narrow CIs further but is unlikely to move the qualitative picture.
 - Measure real-world test-coverage rates to estimate how often the primary (test-linked) vs fallback (confidence) path fires in practice — this is the single biggest driver of the product's real-world value.
 - Wire the policy into the existing OpenAI-compatible proxy (`proxy.py`) as a `tests | confidence | hybrid` escalation mode.
