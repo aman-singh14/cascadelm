@@ -36,7 +36,10 @@ def load_run(run: Path) -> list[dict]:
         fs = sorted(glob.glob(str(run / pat)))
         return set(json.loads(open(fs[-1]).read())["resolved_ids"]) if fs else set()
     rc, rs = resolved("*cheap_*.json"), resolved("*strong_*.json")
-    conf = {r["iid"]: r["conf_patch"] for r in json.loads((run / "abstention.json").read_text())}
+    # abstention.json (confidence scores) is optional — only the conf-router rows
+    # need it; always-cheap and test-linked don't.
+    ab = run / "abstention.json"
+    conf = {r["iid"]: r["conf_patch"] for r in json.loads(ab.read_text())} if ab.exists() else {}
     cheap_cost = {i: r["cost_usd"] for i, r in json.loads((run / "results.cheap.json").read_text()).items()}
     strong_cost = {i: r["cost_usd"] for i, r in json.loads((run / "results.strong.json").read_text()).items()}
     rows = []
@@ -53,8 +56,7 @@ def load_run(run: Path) -> list[dict]:
 
 
 def frontier(rows: list[dict]) -> None:
-    rows = [r for r in rows if r["conf"] is not None]
-    n = len(rows)
+    n = len(rows)  # test-linked / always-cheap use ALL tasks
     avg_strong = st.mean([r["strong_cost"] for r in rows if r["strong_cost"] is not None])
     cheap_total = sum(r["cheap_cost"] for r in rows)
 
@@ -78,18 +80,21 @@ def frontier(rows: list[dict]) -> None:
     print("-" * 56)
     print(f"{'always-cheap':30s} {always_cheap_succ:7.1%} {0:6.0%} {cheap_total/n:8.3f}")
 
-    # sweep confidence thresholds
+    # sweep confidence thresholds — only over tasks that HAVE a confidence score
+    crows = [r for r in rows if r["conf"] is not None]
+    cn = len(crows)
+    cheap_total_c = sum(r["cheap_cost"] for r in crows)
     best = None
     for T in range(0, 101, 5):
-        esc = [r for r in rows if r["conf"] < T]
-        succ = sum((r["cheap_pass"] or r["cell"] == "3") if (r["conf"] < T) else r["cheap_pass"] for r in rows) / n
-        cost = (cheap_total + sum(strong_c(r) for r in esc)) / n
-        row = (T, succ, len(esc) / n, cost)
+        esc = [r for r in crows if r["conf"] < T]
+        succ = sum((r["cheap_pass"] or r["cell"] == "3") if (r["conf"] < T) else r["cheap_pass"] for r in crows) / cn
+        cost = (cheap_total_c + sum(strong_c(r) for r in esc)) / cn
+        row = (T, succ, len(esc) / cn, cost)
         # track the threshold that maximizes success-per-dollar-over-baseline
         if best is None or succ > best[1] or (succ == best[1] and cost < best[3]):
             best = row
         if T % 20 == 0:
-            print(f"{'  conf-router (fallback) T='+str(T):30s} {succ:7.1%} {len(esc)/n:6.0%} {cost:8.3f}")
+            print(f"{'  conf-router (fallback) T='+str(T):30s} {succ:7.1%} {len(esc)/cn:6.0%} {cost:8.3f}  (n={cn})")
 
     print(f"{'TEST-LINKED (tests fail->esc)':30s} {testlinked_succ:7.1%} "
           f"{testlinked_esc:6.0%} {testlinked_cost/n:8.3f}   <- primary, deployable when tests exist")

@@ -1,6 +1,6 @@
 # CascadeLM — Product Spec: a test-gated model cascade
 
-*Status: draft, grounded in an n=30 SWE-bench Verified run (n=60 in progress). Numbers will tighten.*
+*Status: draft, grounded in an n=60 SWE-bench Verified run (two proportional samples of 30). CIs are still wide (~±10%) at this n.*
 
 ## One-line
 
@@ -14,13 +14,13 @@ We measured both on SWE-bench Verified (mini-SWE-agent driving each model; pass/
 
 **(1) The cascade is real.** On a realistic task mix, per-task outcomes fall into:
 
-| cell | meaning | share (n=30) |
+| cell | meaning | share (n=60) |
 |------|---------|-------------:|
-| cell-1 | cheap already passes | 50% |
-| cell-3 | cheap fails, strong rescues | **27%** |
-| cell-4 | both fail | 23% |
+| cell-1 | cheap already passes | 53% |
+| cell-3 | cheap fails, strong rescues | **20%** |
+| cell-4 | both fail | 27% |
 
-Escalating the cell-3 tasks lifts success from **50% (always-cheap) to 77%**. That 27-point headroom is the product's reason to exist. (cell-3 concentrates in *medium*-difficulty tasks — easy tasks the cheap model already nails; the hardest tasks neither model solves.)
+Escalating the cell-3 tasks lifts success from **53% (always-cheap) to 73%**. That ~20-point headroom is the product's reason to exist. (cell-3 concentrates in *medium*-difficulty tasks — easy tasks the cheap model already nails; the hardest tasks neither model solves. The n=30 pilot showed a rosier 27% / 50→77%; n=60 is the tighter estimate.)
 
 **(2) The escalation signal is the hard part — and self-signals are weak.** We need to know, at inference time, "did the cheap patch actually work?" Without ground truth, we tried to get the cheap model to tell us:
 
@@ -55,16 +55,16 @@ request → cheap model produces a patch
 
 The test result is an **objective, uncorrelated** signal — it doesn't share the model's blind spots the way self-verification does. This converts the "escalate-all-failures oracle" (which we could only compute because SWE-bench has hidden tests) into a **deployable policy**.
 
-## Measured economics (per task = one fix; n=30)
+## Measured economics (per task = one fix; n=60)
 
 | policy | success | escalate % | $/task |
 |--------|--------:|-----------:|-------:|
-| always-cheap | 50% | 0% | $0.08 |
-| **test-linked (primary)** | **77%** | 50% | **$0.20** |
-| confidence-router T=40 (fallback) | 60% | 13% | $0.12 |
-| always-strong | ~77%+ | 100% | $0.24 |
+| always-cheap | 53% | 0% | $0.10 |
+| **test-linked (primary)** | **73%** | 47% | **$0.23** |
+| confidence-router T=40 (fallback, n=30) | 60% | 13% | $0.12 |
+| always-strong | ~73%+ | 100% | $0.29 |
 
-Test-linked hits the **same success as always-strong at ~15% lower cost**, and roughly **2.5× cheaper than always-strong on the half of tasks the cheap model already passes**. Over a ~50-fix session: ~$4 all-cheap (half the work lands) vs ~$10 test-linked (77% lands) vs ~$12 all-strong.
+Test-linked hits the **same success as always-strong at ~20% lower cost**, and is ~3× cheaper than always-strong on the ~half of tasks the cheap model already passes. Over a ~50-fix session: ~$5 all-cheap (about half the work lands) vs ~$12 test-linked (73% lands) vs ~$15 all-strong.
 
 ## Design: tests-primary, confidence-fallback
 
