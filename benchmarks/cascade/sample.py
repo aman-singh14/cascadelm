@@ -85,9 +85,12 @@ def _pick_round_robin(rows: list[dict], k: int, rng: random.Random) -> list[dict
     return picked
 
 
-def build_sample(n: int, mode: str = "balanced", floor: int = 4, seed: int = 0) -> list[dict]:
+def build_sample(n: int, mode: str = "balanced", floor: int = 4, seed: int = 0,
+                 exclude: set[str] | None = None) -> list[dict]:
     rng = random.Random(seed)
     rows = list(load_dataset(DATASET, split="test"))
+    if exclude:
+        rows = [r for r in rows if r["instance_id"] not in exclude]
     by_diff: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         by_diff[r.get("difficulty", "unknown")].append(r)
@@ -108,10 +111,12 @@ def main() -> None:
     ap.add_argument("--mode", choices=["balanced", "proportional"], default="balanced")
     ap.add_argument("--floor", type=int, default=4, help="min tasks per difficulty bucket (balanced mode)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--exclude", default=None, help="path to a sample.json whose instance_ids to exclude")
     ap.add_argument("-o", "--output", default="benchmarks/cascade_runs/sample.json")
     args = ap.parse_args()
 
-    sample = build_sample(args.n, args.mode, args.floor, args.seed)
+    exclude = set(json.loads(Path(args.exclude).read_text())["instance_ids"]) if args.exclude else None
+    sample = build_sample(args.n, args.mode, args.floor, args.seed, exclude=exclude)
 
     from collections import Counter
     diff_dist = Counter(r.get("difficulty") for r in sample)
