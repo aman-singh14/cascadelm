@@ -1,0 +1,1502 @@
+{
+  "info": {
+    "model_stats": {
+      "instance_cost": 0.16373,
+      "api_calls": 9
+    },
+    "config": {
+      "agent": {
+        "system_template": "You are a helpful assistant that can interact with a computer shell to solve programming tasks.\n",
+        "instance_template": "You are a senior engineer acting as a PLANNER. Investigate the repository (working dir /testbed) only as much as needed to name the EXACT fix for the issue below, then write the plan. Use read-only shell commands (cat, sed -n, grep, find, ls, git log/show, python for read-only reproduction).\n\nBE FRUGAL \u2014 investigation steps cost money and time:\n- Write your plan to /plan.md AS SOON AS you can name the specific file, function, and concrete change. Do not keep exploring once the fix is clear.\n- A simple one-line or single-function bug typically needs only 2-4 steps to locate \u2014 plan immediately once found.\n- Spend more steps ONLY when the issue genuinely spans multiple files or the root cause is subtle. Match your effort to the problem's real complexity.\n\nSTRICT RULES:\n- DO NOT modify any repository file. You are planning only, not fixing.\n- Each response: a short THOUGHT plus AT LEAST ONE bash tool call.\n- As soon as you can specify the exact fix, write your final plan to /plan.md and then stop. Use exactly this heredoc form as your final command:\n    cat > /plan.md <<'PLAN_EOF'\n    ## Root cause\n    <what is wrong and precisely where>\n    ## Changes\n    - <file path> :: <function/location> \u2014 <the precise change to make>\n    - ...\n    ## Verification\n    <how to confirm the fix works>\n    PLAN_EOF\n- The plan MUST name specific files, functions, and concrete edits \u2014 specific enough that another engineer implements it WITHOUT re-investigating from scratch.\n\n<issue>\n{{task}}\n</issue>",
+        "step_limit": 20,
+        "cost_limit": 5.0,
+        "wall_time_limit_seconds": 1800,
+        "max_consecutive_format_errors": 3,
+        "output_path": "/home/aman/cascadelm/cascadelm/benchmarks/cascade_runs/pe_cell1/traj/psf__requests-6028.plan.traj.json"
+      },
+      "agent_type": "__main__.PlannerAgent",
+      "model": {
+        "model_name": "gpt-5.3-codex",
+        "model_kwargs": {
+          "drop_params": true,
+          "parallel_tool_calls": true,
+          "reasoning_effort": "high"
+        },
+        "litellm_model_registry": null,
+        "set_cache_control": null,
+        "cost_tracking": "default",
+        "format_error_template": "{% if finish_reason is defined and (finish_reason == \"length\" or (finish_reason == \"tool_calls\" and not has_tool_calls)) -%}\nYour previous response reached the output token limit (finish_reason={{ finish_reason }}) before you produced a tool call, so it was cut off. Respond more concisely and finish with exactly one bash tool call. If you need to think more, do so briefly.\n{%- else -%}\nTool call error:\n\n<error>\n{{error}}\n</error>\n\nHere is general guidance on how to submit correct toolcalls:\n\nEvery response needs to use the 'bash' tool at least once to execute commands.\n\nCall the bash tool with your command as the argument:\n- Tool: bash\n- Arguments: {\"command\": \"your_command_here\"}\n\nIf you have completed your assignment, please consult the first message about how to\nsubmit your solution (you will not be able to continue working on this task after that).\n{%- endif %}\n",
+        "observation_template": "{% if output.exception_info -%}\n<exception>{{output.exception_info}}</exception>\n{% endif -%}\n<returncode>{{output.returncode}}</returncode>\n{% if output.output | length < 10000 -%}\n<output>\n{{ output.output -}}\n</output>\n{%- else -%}\n<warning>\nThe output of your last command was too long.\nPlease try a different command that produces less output.\nIf you're looking at a file you can try use head, tail or sed to view a smaller number of lines selectively.\nIf you're using grep or find and it produced too much output, you can use a more selective search pattern.\nIf you really need to see something from the full command's output, you can redirect output to a file and then search in that file.\n</warning>\n{%- set elided_chars = output.output | length - 10000 -%}\n<output_head>\n{{ output.output[:5000] }}\n</output_head>\n<elided_chars>\n{{ elided_chars }} characters elided\n</elided_chars>\n<output_tail>\n{{ output.output[-5000:] }}\n</output_tail>\n{%- endif -%}\n",
+        "multimodal_regex": ""
+      },
+      "model_type": "minisweagent.models.litellm_response_model.LitellmResponseModel",
+      "environment": {
+        "image": "docker.io/swebench/sweb.eval.x86_64.psf_1776_requests-6028:latest",
+        "cwd": "/testbed",
+        "env": {
+          "PAGER": "cat",
+          "MANPAGER": "cat",
+          "LESS": "-R",
+          "PIP_PROGRESS_BAR": "off",
+          "TQDM_DISABLE": "1",
+          "BASH_ENV": "/root/.bashrc"
+        },
+        "forward_env": [],
+        "timeout": 60,
+        "executable": "docker",
+        "run_args": [
+          "--rm"
+        ],
+        "container_timeout": "2h",
+        "pull_timeout": 120,
+        "interpreter": [
+          "bash",
+          "-c"
+        ]
+      },
+      "environment_type": "minisweagent.environments.docker.DockerEnvironment"
+    },
+    "mini_version": "2.4.6",
+    "exit_status": "PlanComplete",
+    "submission": "## Root cause\n`requests.utils.get_auth_from_url` is brittle: it unquotes `(parsed.username, parsed.password)` in one `try` block and falls back to `('', '')` on any `TypeError`. On Python 3.8.12, proxy URL parsing can yield a `None` password in cases that previously produced an empty string, so the function drops otherwise valid proxy credentials entirely. That prevents `Proxy-Authorization` from being built, and the proxy returns HTTP 407.\n\n## Changes\n- `requests/utils.py` :: `get_auth_from_url` \u2014 stop doing all-or-nothing tuple unquoting. Parse username and password independently, normalize `None` to `''`, and only unquote non-`None` values so username is preserved even when password is empty/omitted by parser behavior.\n- `requests/sessions.py` :: `Session.rebuild_proxies` \u2014 make proxy-auth header creation consistent with `HTTPAdapter.proxy_headers` by allowing an empty password (set `Proxy-Authorization` when a username exists, not only when both username and password are truthy).\n- `tests/test_utils.py` :: add regression coverage for `get_auth_from_url` with proxy URLs where username is present and password may parse as empty/`None`, asserting credentials are not dropped.\n- `tests/test_requests.py` :: add regression coverage for `Session.rebuild_proxies` to ensure `Proxy-Authorization` is still rebuilt for proxies with username + empty password.\n\n## Verification\nRun targeted tests:\n- `pytest tests/test_utils.py -k get_auth_from_url`\n- `pytest tests/test_requests.py -k \"proxy_auth or rebuild_proxies\"`\nThen run the full test suite (or at least requests+session subsets) to confirm no proxy/header regressions."
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant that can interact with a computer shell to solve programming tasks."
+    },
+    {
+      "role": "user",
+      "content": "You are a senior engineer acting as a PLANNER. Investigate the repository (working dir /testbed) only as much as needed to name the EXACT fix for the issue below, then write the plan. Use read-only shell commands (cat, sed -n, grep, find, ls, git log/show, python for read-only reproduction).\n\nBE FRUGAL \u2014 investigation steps cost money and time:\n- Write your plan to /plan.md AS SOON AS you can name the specific file, function, and concrete change. Do not keep exploring once the fix is clear.\n- A simple one-line or single-function bug typically needs only 2-4 steps to locate \u2014 plan immediately once found.\n- Spend more steps ONLY when the issue genuinely spans multiple files or the root cause is subtle. Match your effort to the problem's real complexity.\n\nSTRICT RULES:\n- DO NOT modify any repository file. You are planning only, not fixing.\n- Each response: a short THOUGHT plus AT LEAST ONE bash tool call.\n- As soon as you can specify the exact fix, write your final plan to /plan.md and then stop. Use exactly this heredoc form as your final command:\n    cat > /plan.md <<'PLAN_EOF'\n    ## Root cause\n    <what is wrong and precisely where>\n    ## Changes\n    - <file path> :: <function/location> \u2014 <the precise change to make>\n    - ...\n    ## Verification\n    <how to confirm the fix works>\n    PLAN_EOF\n- The plan MUST name specific files, functions, and concrete edits \u2014 specific enough that another engineer implements it WITHOUT re-investigating from scratch.\n\n<issue>\nProxy authentication bug\n<!-- Summary. -->\r\n\r\nWhen using proxies in python 3.8.12, I get an error 407. Using any other version of python works fine. I am assuming it could be to do with this https://docs.python.org/3/whatsnew/3.8.html#notable-changes-in-python-3-8-12.\r\n\r\n<!-- What you expected. -->\r\n\r\nI should get a status of 200.\r\n\r\n<!-- What happened instead. -->\r\n\r\nI get a status code of 407.\r\n\r\n```python\r\nimport requests\r\n\r\n\r\nr = requests.get('https://example.org/', proxies=proxies) # You will need a proxy to test with, I am using a paid service.\r\nprint(r.status_code)\r\n\r\n```\r\n\r\n## System Information\r\n\r\n```json\r\n{\r\n  \"chardet\": {\r\n    \"version\": null\r\n  },\r\n  \"charset_normalizer\": {\r\n    \"version\": \"2.0.9\"\r\n  },\r\n  \"cryptography\": {\r\n    \"version\": \"\"\r\n  },\r\n  \"idna\": {\r\n    \"version\": \"3.3\"\r\n  },\r\n  \"implementation\": {\r\n    \"name\": \"CPython\",\r\n    \"version\": \"3.8.12\"\r\n  },\r\n  \"platform\": {\r\n    \"release\": \"5.13.0-7620-generic\",\r\n    \"system\": \"Linux\"\r\n  },\r\n  \"pyOpenSSL\": {\r\n    \"openssl_version\": \"\",\r\n    \"version\": null\r\n  },\r\n  \"requests\": {\r\n    \"version\": \"2.27.0\"\r\n  },\r\n  \"system_ssl\": {\r\n    \"version\": \"101010cf\"\r\n  },\r\n  \"urllib3\": {\r\n    \"version\": \"1.26.7\"\r\n  },\r\n  \"using_charset_normalizer\": true,\r\n  \"using_pyopenssl\": false\r\n}\r\n```\n\n</issue>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGU0YjJhNWE0MTcxNDVhOTAwNmE2ODNhOGMxMjljODE5MzkwY2UxMjY2YzA3MDUzNjE=",
+      "created_at": 1785215628,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0e4b2a5a417145a9006a683a8c69c48193a848e913c66de774",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaDqOn1tvs2tkVMM5SI8LFgtDxJJxSpWvAACu1VLzoKMpVdiBBrnZNslw7tjmcKPEGtn7cus4T77HkTNlVBwTRiZ5I3kOMRU27os-JRuiDH8bZpmJnPvUWHGGH07-1XaG0xgdwkrPhLPOmjEW8YFUU3kgjfOlOYqyZ-HvxijAVl-4YgVJWOWj4DyZFbRvKO2z6PK1zTzQvtT6MsnH9lIdLMrhEfq7AcBQqIOg5MYHs3YMj1zyyrSBEhPQ1hVsvSf0INgdkjeikvtomB78nhjOUT7_SodmnhZ_WTPtSeeDUNZDyIbUrywYAjyYGnavrnNIwtz8ciGSC0w7kuBQVcEoArC2nEpfJ0hcolL5qmD9wLTEeHq7QXkcxu3Y8Wf0qMlwSwYzIyCaGLa_WYVhcSx-MqzObEV-lAKLqD4-f8VUO_4_35g9d3yMFUXf_Cweoc0DD1GWYkD0IQ7ZQqAgeolxQwDnn1oqtrpSwLJOi-cALsx7SEMxV1Ec-AT1tTGDW6ZVLVQ7CHDL04SeVVckDd_dlnI9LSqT0cwZpgihOoadunKw2Ey84PZCJuUZ2oyul6riz-GLjPnDC_BUuGuPbUAEK8IfNGdPp_aMWM0Tp7b89Tq_yXtEUwoDFn8bPxjtTzYCh7gQ3mlHw9UjogrsSb4gH8HL0jIrdWNmN7ccVpSoH8KRnm-2HWv9tNnNK7hkSetBuPMC4yRfqcJBbY2cxrnejLiyyhXaBEStnTZxmgn_jlra_d2NBnOFpUTGGnvePccOE0Ima5Gdtkv6baQYwiK5v8rkzb_CcTLVvPWW4WJ0hGIwIsxTdYBXfTEm6DjAcm0oDUuvQLvqeLuioxXMUeWCbkkZ5ElUeK6fxInDjhXUL1vB_7nIS_BF4IB5gwEHYnwR0u0lhkRik4Ek80bQZhIRnEAp-Cno3l1vVwGhqEMn9UTgLjPBep0U4R5Zs-Vx6SiA_A-ut4RttK1K2j1DOrVSIW0DBmAjsulvj7LIxFUn0b8M3R7Vfv195YTMxWT7zTl_QOZVmTXJP9G3YaeNtIcYMl5TS_GAlvcbx2SrmDKN02GGe7AomyL-oHPp1dUNQoXQU0Dq34C3frbd7y4FHD-OtNbl6_q2kvaTxOQ-MR-7cLCmfGcZqzJWY84fYNYpIoqIBX4yuo_glgApY4llCQaJ8unq3ewgdCBdRkE5FKEnHh-k2jbgw7cvgRW_BRaS2rylfHmj2jqoFy42OVKAFBeCaEQzKhJpikX1mj8xnu6xv1T_1DRSobQj2VwbPMAv8CtZV16mZASWJPKUq1DfhfGu51Q08hdjafg7snUWVgTOERWzc77bZwNhE5H6hPpiJhZ3zjs8MYk-4qgAyCQ2G49PiKh5KXNDyPuxr-ISW10pEMMjORg="
+        },
+        {
+          "id": "msg_0e4b2a5a417145a9006a683a8d1e4081938679045b47cd2d78",
+          "content": [
+            {
+              "annotations": [],
+              "text": "THOUGHT: I\u2019ll quickly locate the proxy/auth handling code and any Python 3.8.12-specific workaround, then stop as soon as the exact edit is clear.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && ls\"}",
+          "call_id": "call_Y4kLfyBEznc49P5dw76S1SNB",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0e4b2a5a417145a9006a683a8dbce88193b99650de3281bc3e",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 791,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 138,
+        "output_tokens_details": {
+          "reasoning_tokens": 70,
+          "text_tokens": null
+        },
+        "total_tokens": 929,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785215629,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && ls",
+            "tool_call_id": "call_Y4kLfyBEznc49P5dw76S1SNB"
+          }
+        ],
+        "cost": 0.0033162499999999998,
+        "timestamp": 1785215630.1109161
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "AUTHORS.rst\nHISTORY.md\nLICENSE\nMANIFEST.in\nMakefile\nNOTICE\nREADME.md\nbuild\ndocs\next\npytest.ini\nrequests\nrequests.egg-info\nrequirements-dev.txt\nsetup.cfg\nsetup.py\ntests\ntox.ini\n",
+        "returncode": 0,
+        "timestamp": 1785215630.2475502,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_Y4kLfyBEznc49P5dw76S1SNB",
+      "output": "<returncode>0</returncode>\n<output>\nAUTHORS.rst\nHISTORY.md\nLICENSE\nMANIFEST.in\nMakefile\nNOTICE\nREADME.md\nbuild\ndocs\next\npytest.ini\nrequests\nrequests.egg-info\nrequirements-dev.txt\nsetup.cfg\nsetup.py\ntests\ntox.ini\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGU0YjJhNWE0MTcxNDVhOTAwNmE2ODNhOGU2NDU0ODE5Mzk2MWY3MzZmNjE5ZTc4OGQ=",
+      "created_at": 1785215630,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0e4b2a5a417145a9006a683a8ebccc81938d714b7263e0461e",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaDqSoQd5vvQzPi8EX1qxcYqgNDGaBY2Zx0s8PPip_QqpDp17jlVoY4U12Kn4zYfX_HsKH8kMilA9palIAtdM-Nlva3NjcQx5YDTKhkZazgCkcHh_aGt17nE5EMFBYmP91lfcLeGuzyG6vhy7bum-47gQLlRvxNfl_RobLnozZQnLj7BL0eVpq10nf9VshiJLWtVjPmh_qYtr1HULQjS5Ax3bHhmnHJJkjk4jkZovvR4qXGR3I3qwmMATUe9uLFLSi0Co4lkYUffVrI-3tsJGRoDWjS-ULwvFZ1jE8tDbc_OR8rd9Uoue2MShMS1TPgbqh5hzjjbYZm3f48IbdkgZfP93yPrGHdqt_-JRA86MZpCCd4AdFWDXGoeiU1iGmBUUI8HRcAvx16e28syrYwWc54_ZPMoCGy5OR3Sgk-_ibbIgALs3mJgIx-HQ9BMWGO9CK44HaaWgdAQZpC1nZCLcdBf4SQcbMoUdip4whtE2Arvr4XZU9GaKf72i0jqafSswJRYG6WEFROX4rDC_nnVtPSMvHczetoT47-tglDSZmsXmVo3OnSkb3EHn2pdKjAxvEIvfbhCyyQQvaNCceTYR40Xc76bLRJ6582I7Ln-NuY8wCN1PZXXomSSaTh8FCdIx85SkivOYt8meDjoKF6unJNcglQok4k80LsM5qp-mSdMsCi98F_MnpbCLCjTJqF79hac29Zs2VOmrdy7eB7kd-o6KVITpj9NBV61U0qnbbFohP5B9lfkW2OjMNC0VXVTmApFFubDembxCHCQ9x7BVAaNFFZakeAIYmbmIYJWmDlIuwJxOdkuc-IRDY6rO_dnfz774BoxNRPOTUYUjhLwTxBGdvQMVNaNNW6JRiLzQzXjL2YMOkUDOYi4uvAZip9pZ-ESeXxvwoqC6vwOovLCvM2celwtdQa80w6gM7hS9F15SpbiOycABu0cK3tQ1HtJ-6-WljwoluASb0Oqrs_pPSlrQZFe5iP5wQevETuakN6Y8TplaQLbp1MTHJQtHkGKcoaf2IBeeRaYEnFLoGKmB54byCfpIvGgAKMftf2NYjlthHSabjeGylRvPdcFn8ukaCRA-xH6UYgO-u8VoIC0QdyrfsnfZ50ImlbVxEyny6Tt251ckEnMBHTnPDGj5MNPvecsNEYmG-4AvwYN95Ri1YpdKAIPtM4W2KKmBgVCh66D4PU5oGh7bj5m54D6_9wSIdegcuB6LWRbo5Fpit2PQL6BCSXczpepv_uNNRyTgm8SIL6IRnEc22TjpgiyMvitChF7LjpoCISKfkTLhWyqHd4w6PLUUIgb_uVcIfQ2H5yg4kxMc2QUbXQV1nNgPZsZDF_CjdjvZ__1WMQqFgyclZAPex2EN3gzmJWo0uoagVHevHAkLZI-g--IEEAQZFK6T8-5Ri-QHiR6VC1lt6nVPh8AGPo1gzS39Dc4excvXRTJ2ObJyhFDtdBsoN-rftbxBXIXq9G-35RUz5M0Ehnokr9M-6KqHD8_URmvlD9tfD0I7orpK1sO3NEh83fOIZj_JcTturOyNYRuHaRJcjZPahT-q6XrGWOLQfNLzjGwVAsMQdwIzW9d3HtIvSaSy1cwo9x5aErITshJBK-ELUAFcBuLSncgyIBWsz5u-Dkuhdd_wwNWUtbw5FYLrej6WQRLLD789Pki6b298gjJYYQ03kcav1OUFF-2Zr341aLnzmNnWjvn-dqcZtou0tzh5WW61uWN6h54-9z2C5goFrEyUBBkgGTDmlNx-KaOzgYZIXXjF4FTKicfWqjfliuU6gY3_KuXsFxRiQm-updbMxpcR7d3k7zCJDMV-xeeLV7g2GOaG0ehGiSW5YW_bjo70s6Vnbh0PIWNOAnjMRGIo7fG3L_PfY5kFoLRo5_ih_3fMnqv_KleaA0foEo7EiqpHlM8WsbH6tqV9fDTNce7-T0QTnDylscEiY1TjAhb-FLnlYE9MO5Gc3IyaLq4i2tHtGzSdG6NWil9qs7AfiGQ6XDDnOFztZieqbH_r3w9DSfkCkwRoQxYNOw_cRuTmmTw2QCdtqqsGX0xdDn87tR3RtUK1mbCxCQ=="
+        },
+        {
+          "id": "msg_0e4b2a5a417145a9006a683a91347c81938571d6645697a77d",
+          "content": [
+            {
+              "annotations": [],
+              "text": "THOUGHT: I\u2019ll grep for proxy-auth code paths and any references to Python 3.8.12 behavior to pinpoint the fix location.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && grep -RIn \\\"3.8.12\\\\|Proxy-Authorization\\\\|proxy_auth\\\\|proxy authorization\\\\|proxy_url\\\\|proxies\\\" requests tests | head -n 200\"}",
+          "call_id": "call_gXe2u7NC0qX7N8V55EtfzIGl",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0e4b2a5a417145a9006a683a91a6748193851cf70808416318",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 1009,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 294,
+        "output_tokens_details": {
+          "reasoning_tokens": 193,
+          "text_tokens": null
+        },
+        "total_tokens": 1303,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785215634,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && grep -RIn \"3.8.12\\|Proxy-Authorization\\|proxy_auth\\|proxy authorization\\|proxy_url\\|proxies\" requests tests | head -n 200",
+            "tool_call_id": "call_gXe2u7NC0qX7N8V55EtfzIGl"
+          }
+        ],
+        "cost": 0.00588175,
+        "timestamp": 1785215634.6172152
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "requests/compat.py:44:        quote, unquote, quote_plus, unquote_plus, urlencode, getproxies,\nrequests/compat.py:45:        proxy_bypass, proxy_bypass_environment, getproxies_environment)\nrequests/compat.py:64:    from urllib.request import parse_http_list, getproxies, proxy_bypass, proxy_bypass_environment, getproxies_environment\nrequests/utils.py:32:    quote, urlparse, bytes, str, unquote, getproxies,\nrequests/utils.py:34:    proxy_bypass_environment, getproxies_environment, Mapping)\nrequests/utils.py:100:        if getproxies_environment():\nrequests/utils.py:738:def should_bypass_proxies(url, no_proxy):\nrequests/utils.py:740:    Returns whether we should bypass proxies or not.\nrequests/utils.py:783:                    # to apply the proxies on this URL.\nrequests/utils.py:799:def get_environ_proxies(url, no_proxy=None):\nrequests/utils.py:801:    Return a dict of environment proxies.\nrequests/utils.py:805:    if should_bypass_proxies(url, no_proxy=no_proxy):\nrequests/utils.py:808:        return getproxies()\nrequests/utils.py:811:def select_proxy(url, proxies):\nrequests/utils.py:815:    :param proxies: A dictionary of schemes or schemes and hosts to proxy URLs\nrequests/utils.py:817:    proxies = proxies or {}\nrequests/utils.py:820:        return proxies.get(urlparts.scheme, proxies.get('all'))\nrequests/utils.py:830:        if proxy_key in proxies:\nrequests/utils.py:831:            proxy = proxies[proxy_key]\nrequests/utils.py:837:def resolve_proxies(request, proxies, trust_env=True):\nrequests/utils.py:839:    input to resolve a mapping of target proxies. This will consider settings\nrequests/utils.py:843:    :param proxies: A dictionary of schemes or schemes and hosts to proxy URLs\nrequests/utils.py:848:    proxies = proxies if proxies is not None else {}\nrequests/utils.py:851:    no_proxy = proxies.get('no_proxy')\nrequests/utils.py:852:    new_proxies = proxies.copy()\nrequests/utils.py:854:    if trust_env and not should_bypass_proxies(url, no_proxy=no_proxy):\nrequests/utils.py:855:        environ_proxies = get_environ_proxies(url, no_proxy=no_proxy)\nrequests/utils.py:857:        proxy = environ_proxies.get(scheme, environ_proxies.get('all'))\nrequests/utils.py:860:            new_proxies.setdefault(scheme, proxy)\nrequests/utils.py:861:    return new_proxies\nrequests/utils.py:886:    \"\"\"Return a list of parsed link headers proxies.\nrequests/adapters.py:63:             cert=None, proxies=None):\nrequests/adapters.py:76:        :param proxies: (optional) The proxies dictionary to apply to the request.\nrequests/adapters.py:293:    def get_connection(self, url, proxies=None):\nrequests/adapters.py:299:        :param proxies: (optional) A Requests-style dictionary of proxies used on this request.\nrequests/adapters.py:302:        proxy = select_proxy(url, proxies)\nrequests/adapters.py:306:            proxy_url = parse_url(proxy)\nrequests/adapters.py:307:            if not proxy_url.host:\nrequests/adapters.py:330:    def request_url(self, request, proxies):\nrequests/adapters.py:341:        :param proxies: A dictionary of schemes or schemes and hosts to proxy URLs.\nrequests/adapters.py:344:        proxy = select_proxy(request.url, proxies)\nrequests/adapters.py:390:            headers['Proxy-Authorization'] = _basic_auth_str(username,\nrequests/adapters.py:395:    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):\nrequests/adapters.py:408:        :param proxies: (optional) The proxies dictionary to apply to the request.\nrequests/adapters.py:413:            conn = self.get_connection(request.url, proxies)\nrequests/adapters.py:418:        url = self.request_url(request, proxies)\nrequests/adapters.py:419:        self.add_headers(request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies)\nrequests/auth.py:104:        r.headers['Proxy-Authorization'] = _basic_auth_str(self.username, self.password)\nrequests/status_codes.py:64:    407: ('proxy_authentication_required', 'proxy_auth', 'proxy_authentication'),\nrequests/api.py:40:    :param proxies: (optional) Dictionary mapping protocol to the URL of the proxy.\nrequests/sessions.py:8:requests (cookies, auth, proxies).\nrequests/sessions.py:31:    requote_uri, get_environ_proxies, get_netrc_auth, should_bypass_proxies,\nrequests/sessions.py:32:    get_auth_from_url, rewind_body, resolve_proxies\nrequests/sessions.py:145:                          verify=True, cert=None, proxies=None, yield_requests=False, **adapter_kwargs):\nrequests/sessions.py:215:            proxies = self.rebuild_proxies(prepared_request, proxies)\nrequests/sessions.py:243:                    proxies=proxies,\nrequests/sessions.py:272:    def rebuild_proxies(self, prepared_request, proxies):\nrequests/sessions.py:279:        This method also replaces the Proxy-Authorization header where\nrequests/sessions.py:286:        new_proxies = resolve_proxies(prepared_request, proxies, self.trust_env)\nrequests/sessions.py:288:        if 'Proxy-Authorization' in headers:\nrequests/sessions.py:289:            del headers['Proxy-Authorization']\nrequests/sessions.py:292:            username, password = get_auth_from_url(new_proxies[scheme])\nrequests/sessions.py:297:            headers['Proxy-Authorization'] = _basic_auth_str(username, password)\nrequests/sessions.py:299:        return new_proxies\nrequests/sessions.py:344:        'headers', 'cookies', 'auth', 'proxies', 'hooks', 'params', 'verify',\nrequests/sessions.py:363:        self.proxies = {}\nrequests/sessions.py:459:            auth=None, timeout=None, allow_redirects=True, proxies=None,\nrequests/sessions.py:486:        :param proxies: (optional) Dictionary mapping protocol or protocol and\nrequests/sessions.py:517:        proxies = proxies or {}\nrequests/sessions.py:520:            prep.url, proxies, stream, verify, cert\nrequests/sessions.py:623:        if 'proxies' not in kwargs:\nrequests/sessions.py:624:            kwargs['proxies'] = resolve_proxies(\nrequests/sessions.py:625:                request, self.proxies, self.trust_env\nrequests/sessions.py:691:    def merge_environment_settings(self, url, proxies, stream, verify, cert):\nrequests/sessions.py:699:            # Set environment's proxies.\nrequests/sessions.py:700:            no_proxy = proxies.get('no_proxy') if proxies is not None else None\nrequests/sessions.py:701:            env_proxies = get_environ_proxies(url, no_proxy=no_proxy)\nrequests/sessions.py:702:            for (k, v) in env_proxies.items():\nrequests/sessions.py:703:                proxies.setdefault(k, v)\nrequests/sessions.py:712:        proxies = merge_setting(proxies, self.proxies)\nrequests/sessions.py:717:        return {'verify': verify, 'proxies': proxies, 'stream': stream,\ntests/test_requests.py:20:    Morsel, cookielib, getproxies, str, urlparse,\ntests/test_requests.py:162:        s.proxies = getproxies()\ntests/test_requests.py:172:        s.proxies = getproxies()\ntests/test_requests.py:544:            requests.get('http://localhost:1', proxies={'http': 'non-resolvable-address'})\ntests/test_requests.py:548:            requests.get(httpbin_secure(), proxies={'https': 'http:/badproxyurl:3128'})\ntests/test_requests.py:551:            requests.get(httpbin(), proxies={'http': 'http://:8080'})\ntests/test_requests.py:554:            requests.get(httpbin_secure(), proxies={'https': 'https://'})\ntests/test_requests.py:557:            requests.get(httpbin(), proxies={'http': 'http:///example.com:8080'})\ntests/test_requests.py:595:    def test_proxy_authorization_preserved_on_request(self, httpbin):\ntests/test_requests.py:596:        proxy_auth_value = \"Bearer XXX\"\ntests/test_requests.py:598:        session.headers.update({\"Proxy-Authorization\": proxy_auth_value})\ntests/test_requests.py:602:        assert sent_headers.get(\"Proxy-Authorization\") == proxy_auth_value\ntests/test_requests.py:1034:        s.proxies = getproxies()\ntests/test_requests.py:1401:        s.proxies = getproxies()\ntests/test_requests.py:1879:        proxies = {\ntests/test_requests.py:1884:        mocker.patch.dict(session.adapters['http://'].proxy_manager, proxies)\ntests/test_requests.py:1886:        proxies['one'].clear.assert_called_once_with()\ntests/test_requests.py:1887:        proxies['two'].clear.assert_called_once_with()\ntests/test_requests.py:1889:    def test_proxy_auth(self):\ntests/test_requests.py:1892:        assert headers == {'Proxy-Authorization': 'Basic dXNlcjpwYXNz'}\ntests/test_requests.py:1894:    def test_proxy_auth_empty_pass(self):\ntests/test_requests.py:1897:        assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}\ntests/test_requests.py:2332:        'proxies': {},\ntests/test_requests.py:2356:        proxies = session.rebuild_proxies(prep, {})\ntests/test_requests.py:2357:        assert scheme in proxies\ntests/test_requests.py:2358:        assert proxies[scheme] == proxy\ntests/test_utils.py:18:    get_encodings_from_content, get_environ_proxies,\ntests/test_utils.py:22:    requote_uri, select_proxy, should_bypass_proxies, super_len,\ntests/test_utils.py:183:        assert get_environ_proxies(url, no_proxy=None) == {}\ntests/test_utils.py:192:        assert get_environ_proxies(url, no_proxy=None) != {}\ntests/test_utils.py:202:        assert get_environ_proxies(url, no_proxy=no_proxy) == {}\ntests/test_utils.py:217:        assert get_environ_proxies(url, no_proxy=no_proxy) != {}\ntests/test_utils.py:449:http_proxies = {'http': 'http://http.proxy',\ntests/test_utils.py:451:all_proxies = {'all': 'socks5://http.proxy',\ntests/test_utils.py:453:mixed_proxies = {'http': 'http://http.proxy',\ntests/test_utils.py:457:    'url, expected, proxies', (\ntests/test_utils.py:458:        ('hTTp://u:p@Some.Host/path', 'http://some.host.proxy', http_proxies),\ntests/test_utils.py:459:        ('hTTp://u:p@Other.Host/path', 'http://http.proxy', http_proxies),\ntests/test_utils.py:460:        ('hTTp:///path', 'http://http.proxy', http_proxies),\ntests/test_utils.py:461:        ('hTTps://Other.Host', None, http_proxies),\ntests/test_utils.py:462:        ('file:///etc/motd', None, http_proxies),\ntests/test_utils.py:464:        ('hTTp://u:p@Some.Host/path', 'socks5://some.host.proxy', all_proxies),\ntests/test_utils.py:465:        ('hTTp://u:p@Other.Host/path', 'socks5://http.proxy', all_proxies),\ntests/test_utils.py:466:        ('hTTp:///path', 'socks5://http.proxy', all_proxies),\ntests/test_utils.py:467:        ('hTTps://Other.Host', 'socks5://http.proxy', all_proxies),\ntests/test_utils.py:469:        ('http://u:p@other.host/path', 'http://http.proxy', mixed_proxies),\ntests/test_utils.py:470:        ('http://u:p@some.host/path', 'http://some.host.proxy', mixed_proxies),\ntests/test_utils.py:471:        ('https://u:p@other.host/path', 'socks5://http.proxy', mixed_proxies),\ntests/test_utils.py:472:        ('https://u:p@some.host/path', 'socks5://http.proxy', mixed_proxies),\ntests/test_utils.py:473:        ('https://', 'socks5://http.proxy', mixed_proxies),\ntests/test_utils.py:475:        ('file:///etc/motd', 'socks5://http.proxy', all_proxies),\ntests/test_utils.py:477:def test_select_proxies(url, expected, proxies):\ntests/test_utils.py:478:    \"\"\"Make sure we can select per-host proxies correctly.\"\"\"\ntests/test_utils.py:479:    assert select_proxy(url, proxies) == expected\ntests/test_utils.py:646:def test_should_bypass_proxies(url, expected, monkeypatch):\ntests/test_utils.py:647:    \"\"\"Tests for function should_bypass_proxies to check if proxy\ntests/test_utils.py:652:    assert should_bypass_proxies(url, no_proxy=None) == expected\ntests/test_utils.py:666:def test_should_bypass_proxies_pass_only_hostname(url, expected, mocker):\ntests/test_utils.py:671:    should_bypass_proxies(url, no_proxy=None)\ntests/test_utils.py:713:def test_should_bypass_proxies_no_proxy(\ntests/test_utils.py:715:    \"\"\"Tests for function should_bypass_proxies to check if proxy\ntests/test_utils.py:720:    assert should_bypass_proxies(url, no_proxy=no_proxy) == expected\ntests/test_utils.py:737:def test_should_bypass_proxies_win_registry(url, expected, override,\ntests/test_utils.py:739:    \"\"\"Tests for function should_bypass_proxies to check if proxy\ntests/test_utils.py:775:    assert should_bypass_proxies(url, None) == expected\ntests/test_lowlevel.py:290:        proxy_url = \"socks5://{}:{}\".format(host, port)\ntests/test_lowlevel.py:291:        kwargs = {var: proxy_url}\n",
+        "returncode": 0,
+        "timestamp": 1785215634.7528036,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_gXe2u7NC0qX7N8V55EtfzIGl",
+      "output": "<returncode>0</returncode>\n<warning>\nThe output of your last command was too long.\nPlease try a different command that produces less output.\nIf you're looking at a file you can try use head, tail or sed to view a smaller number of lines selectively.\nIf you're using grep or find and it produced too much output, you can use a more selective search pattern.\nIf you really need to see something from the full command's output, you can redirect output to a file and then search in that file.\n</warning><output_head>\nrequests/compat.py:44:        quote, unquote, quote_plus, unquote_plus, urlencode, getproxies,\nrequests/compat.py:45:        proxy_bypass, proxy_bypass_environment, getproxies_environment)\nrequests/compat.py:64:    from urllib.request import parse_http_list, getproxies, proxy_bypass, proxy_bypass_environment, getproxies_environment\nrequests/utils.py:32:    quote, urlparse, bytes, str, unquote, getproxies,\nrequests/utils.py:34:    proxy_bypass_environment, getproxies_environment, Mapping)\nrequests/utils.py:100:        if getproxies_environment():\nrequests/utils.py:738:def should_bypass_proxies(url, no_proxy):\nrequests/utils.py:740:    Returns whether we should bypass proxies or not.\nrequests/utils.py:783:                    # to apply the proxies on this URL.\nrequests/utils.py:799:def get_environ_proxies(url, no_proxy=None):\nrequests/utils.py:801:    Return a dict of environment proxies.\nrequests/utils.py:805:    if should_bypass_proxies(url, no_proxy=no_proxy):\nrequests/utils.py:808:        return getproxies()\nrequests/utils.py:811:def select_proxy(url, proxies):\nrequests/utils.py:815:    :param proxies: A dictionary of schemes or schemes and hosts to proxy URLs\nrequests/utils.py:817:    proxies = proxies or {}\nrequests/utils.py:820:        return proxies.get(urlparts.scheme, proxies.get('all'))\nrequests/utils.py:830:        if proxy_key in proxies:\nrequests/utils.py:831:            proxy = proxies[proxy_key]\nrequests/utils.py:837:def resolve_proxies(request, proxies, trust_env=True):\nrequests/utils.py:839:    input to resolve a mapping of target proxies. This will consider settings\nrequests/utils.py:843:    :param proxies: A dictionary of schemes or schemes and hosts to proxy URLs\nrequests/utils.py:848:    proxies = proxies if proxies is not None else {}\nrequests/utils.py:851:    no_proxy = proxies.get('no_proxy')\nrequests/utils.py:852:    new_proxies = proxies.copy()\nrequests/utils.py:854:    if trust_env and not should_bypass_proxies(url, no_proxy=no_proxy):\nrequests/utils.py:855:        environ_proxies = get_environ_proxies(url, no_proxy=no_proxy)\nrequests/utils.py:857:        proxy = environ_proxies.get(scheme, environ_proxies.get('all'))\nrequests/utils.py:860:            new_proxies.setdefault(scheme, proxy)\nrequests/utils.py:861:    return new_proxies\nrequests/utils.py:886:    \"\"\"Return a list of parsed link headers proxies.\nrequests/adapters.py:63:             cert=None, proxies=None):\nrequests/adapters.py:76:        :param proxies: (optional) The proxies dictionary to apply to the request.\nrequests/adapters.py:293:    def get_connection(self, url, proxies=None):\nrequests/adapters.py:299:        :param proxies: (optional) A Requests-style dictionary of proxies used on this request.\nrequests/adapters.py:302:        proxy = select_proxy(url, proxies)\nrequests/adapters.py:306:            proxy_url = parse_url(proxy)\nrequests/adapters.py:307:            if not proxy_url.host:\nrequests/adapters.py:330:    def request_url(self, request, proxies):\nrequests/adapters.py:341:        :param proxies: A dictionary of schemes or schemes and hosts to proxy URLs.\nrequests/adapters.py:344:        proxy = select_proxy(request.url, proxies)\nrequests/adapters.py:390:            headers['Proxy-Authorization'] = _basic_auth_str(username,\nrequests/adapters.py:395:    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):\nrequests/adapters.py:408:        :param proxies: (optional) The proxies dictionary to apply to the request.\nrequests/adapters.py:413:            conn = self.get_connection(request.url, proxies)\nrequests/adapters.py:418:        url = self.request_url(request, proxies)\nrequests/adapters.py:419:        self.add_headers(request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies)\nrequests/auth.py:104:        r.headers['Proxy-Authorization'] = _basic_auth_str(self.username, self.password)\nrequests/status_codes.py:64:    407: ('proxy_authentication_required', 'proxy_auth', 'proxy_authentication'),\nrequests/api.py:40:    :param proxies: (optional) Dictionary mapping protocol to the URL of the proxy.\nrequests/sessions.py:8:requests (cookies, auth, proxies).\nrequests/sessions.py:31:    requote_uri, get_environ_proxies, get_netrc_auth, should_bypass_proxies,\nrequests/sessions.py:32:    get_auth_from_url, rewind_body, resolve_proxies\nrequests/sessions.py:145:                          verify=True, cert=None, proxies=None, yield_requests=False, **adapter_kwargs):\nrequests/sessions.py:215:            proxies = self.rebuild_proxies(prepared_request, proxies)\nrequests/sessions.py:243:                    proxies=proxies,\nrequests/sessions.py:272:    def rebuild_proxies(self, prepared_request, proxies):\nrequests/sessions.py:279:        This method also replaces the Proxy-Authorization header where\nrequests/sessions.py:286:        new_proxies = resolve_proxies(prepared_request, proxies, self.trust_env)\nrequests/sessions.py:288:        if 'Proxy-Authorization' in hea\n</output_head>\n<elided_chars>\n2348 characters elided\n</elided_chars>\n<output_tail>\ntests/test_requests.py:557:            requests.get(httpbin(), proxies={'http': 'http:///example.com:8080'})\ntests/test_requests.py:595:    def test_proxy_authorization_preserved_on_request(self, httpbin):\ntests/test_requests.py:596:        proxy_auth_value = \"Bearer XXX\"\ntests/test_requests.py:598:        session.headers.update({\"Proxy-Authorization\": proxy_auth_value})\ntests/test_requests.py:602:        assert sent_headers.get(\"Proxy-Authorization\") == proxy_auth_value\ntests/test_requests.py:1034:        s.proxies = getproxies()\ntests/test_requests.py:1401:        s.proxies = getproxies()\ntests/test_requests.py:1879:        proxies = {\ntests/test_requests.py:1884:        mocker.patch.dict(session.adapters['http://'].proxy_manager, proxies)\ntests/test_requests.py:1886:        proxies['one'].clear.assert_called_once_with()\ntests/test_requests.py:1887:        proxies['two'].clear.assert_called_once_with()\ntests/test_requests.py:1889:    def test_proxy_auth(self):\ntests/test_requests.py:1892:        assert headers == {'Proxy-Authorization': 'Basic dXNlcjpwYXNz'}\ntests/test_requests.py:1894:    def test_proxy_auth_empty_pass(self):\ntests/test_requests.py:1897:        assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}\ntests/test_requests.py:2332:        'proxies': {},\ntests/test_requests.py:2356:        proxies = session.rebuild_proxies(prep, {})\ntests/test_requests.py:2357:        assert scheme in proxies\ntests/test_requests.py:2358:        assert proxies[scheme] == proxy\ntests/test_utils.py:18:    get_encodings_from_content, get_environ_proxies,\ntests/test_utils.py:22:    requote_uri, select_proxy, should_bypass_proxies, super_len,\ntests/test_utils.py:183:        assert get_environ_proxies(url, no_proxy=None) == {}\ntests/test_utils.py:192:        assert get_environ_proxies(url, no_proxy=None) != {}\ntests/test_utils.py:202:        assert get_environ_proxies(url, no_proxy=no_proxy) == {}\ntests/test_utils.py:217:        assert get_environ_proxies(url, no_proxy=no_proxy) != {}\ntests/test_utils.py:449:http_proxies = {'http': 'http://http.proxy',\ntests/test_utils.py:451:all_proxies = {'all': 'socks5://http.proxy',\ntests/test_utils.py:453:mixed_proxies = {'http': 'http://http.proxy',\ntests/test_utils.py:457:    'url, expected, proxies', (\ntests/test_utils.py:458:        ('hTTp://u:p@Some.Host/path', 'http://some.host.proxy', http_proxies),\ntests/test_utils.py:459:        ('hTTp://u:p@Other.Host/path', 'http://http.proxy', http_proxies),\ntests/test_utils.py:460:        ('hTTp:///path', 'http://http.proxy', http_proxies),\ntests/test_utils.py:461:        ('hTTps://Other.Host', None, http_proxies),\ntests/test_utils.py:462:        ('file:///etc/motd', None, http_proxies),\ntests/test_utils.py:464:        ('hTTp://u:p@Some.Host/path', 'socks5://some.host.proxy', all_proxies),\ntests/test_utils.py:465:        ('hTTp://u:p@Other.Host/path', 'socks5://http.proxy', all_proxies),\ntests/test_utils.py:466:        ('hTTp:///path', 'socks5://http.proxy', all_proxies),\ntests/test_utils.py:467:        ('hTTps://Other.Host', 'socks5://http.proxy', all_proxies),\ntests/test_utils.py:469:        ('http://u:p@other.host/path', 'http://http.proxy', mixed_proxies),\ntests/test_utils.py:470:        ('http://u:p@some.host/path', 'http://some.host.proxy', mixed_proxies),\ntests/test_utils.py:471:        ('https://u:p@other.host/path', 'socks5://http.proxy', mixed_proxies),\ntests/test_utils.py:472:        ('https://u:p@some.host/path', 'socks5://http.proxy', mixed_proxies),\ntests/test_utils.py:473:        ('https://', 'socks5://http.proxy', mixed_proxies),\ntests/test_utils.py:475:        ('file:///etc/motd', 'socks5://http.proxy', all_proxies),\ntests/test_utils.py:477:def test_select_proxies(url, expected, proxies):\ntests/test_utils.py:478:    \"\"\"Make sure we can select per-host proxies correctly.\"\"\"\ntests/test_utils.py:479:    assert select_proxy(url, proxies) == expected\ntests/test_utils.py:646:def test_should_bypass_proxies(url, expected, monkeypatch):\ntests/test_utils.py:647:    \"\"\"Tests for function should_bypass_proxies to check if proxy\ntests/test_utils.py:652:    assert should_bypass_proxies(url, no_proxy=None) == expected\ntests/test_utils.py:666:def test_should_bypass_proxies_pass_only_hostname(url, expected, mocker):\ntests/test_utils.py:671:    should_bypass_proxies(url, no_proxy=None)\ntests/test_utils.py:713:def test_should_bypass_proxies_no_proxy(\ntests/test_utils.py:715:    \"\"\"Tests for function should_bypass_proxies to check if proxy\ntests/test_utils.py:720:    assert should_bypass_proxies(url, no_proxy=no_proxy) == expected\ntests/test_utils.py:737:def test_should_bypass_proxies_win_registry(url, expected, override,\ntests/test_utils.py:739:    \"\"\"Tests for function should_bypass_proxies to check if proxy\ntests/test_utils.py:775:    assert should_bypass_proxies(url, None) == expected\ntests/test_lowlevel.py:290:        proxy_url = \"socks5://{}:{}\".format(host, port)\ntests/test_lowlevel.py:291:        kwargs = {var: proxy_url}\n\n</output_tail>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGU0YjJhNWE0MTcxNDVhOTAwNmE2ODNhOTJlOTY4ODE5Mzg3MGY0MjIwZmVjMjE4Y2Y=",
+      "created_at": 1785215634,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0e4b2a5a417145a9006a683a935084819387b745c8c2c5d71d",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaDqX4pgfDNVL-D1qQTpNAIviB63axoW0cqwuMh7Zf4t3DwdAlCYHKV1JeYj8b_rbGI2_GcFiJ6r6IkaLt0PqauA6B2pBFXnEYAJvEvZL4GkgHs1E3ABcNKGlAn9MujshAfktr_v8tljL865WKw1gln3YA9AVGg87k4XKhPqT73Kkn4-urnfNk3a5qTXGsBYWEU5X2MsniUo5aIBzE44koqvQzYl6SlllDOxhLNrJhDmpm113rKJsP1BIahtY8HIQe8x6mik3omiFrr8zrYK5xf23GICxciziBfm-xwVD1_GzpXz_302mT-dTapu9U_hMpzVUva6jee_SklSuQZcky0PQRp7_mcIkpQ3EdvrzVKj2SvrKPxxciJi7m8EUr-tH7Kgj-7OqQS13QzTXG0dykcvQTggzh5_DVDK6nrhu5Tel_3KuaJpFkdzG1rl5UlfzbiGLIWhosWUXW9O-sRDQg5Ql1wwYKSDHYfSYONF9R349VrMYvJwx3Q9eKW5Ty8DUwCYKCjuTKKU36VJxOI180Q1O4DMBvYcR6Eb_Aermo0Gt7H-suOrWH2DyPFKsgeYHMYziPapBHPmy45UsFRXqq4PkEqm10z4AGqxcOyTFZyr70VTzf1LPpPLH4qJq4vDHZEqSj3-bcvV0CkbStxH4I9tqjgoKFGuabV7P8Me-SHOaCftMzwTHc7hNRXqMIO9pGCcs1s5TuPr_Qwx8pzmIkfXLjYax7spxyvDTJdAnEh6sZGUkd39k9Fsys0VjHj9e-idfnbfk7OKsRi0m-Ga2cNDIXSF9kjDr7Q9UuHENijqUhAPrsEAcCwab8qVBIvSJH5GWSreabCxa7rzNzf01_cjcmOESB_xKzhJBkObohZn5zBW6ewK5RZZv1hCdUEqNq_Z-YszJgmQhp0jAh5eovg7558LzXgHt6QdiVCvMj1TZ4KBtMmDceXAfR7gJn-muc4Eqp7khJj8vfs4IQWM4w95-gN8pBH6fHvesSGMpxAJavrWnltuoMSV6501QuCJGwNGoxkrKAk07xgtIqTUebR43VGuJex-zlqJKi2s0d43puXiE7v4z4IxDWOLlSpVXAZFkMzc8O4nvxjZ5QihudFx3tYcJRQTFjojUgL_tjkqrzYCe_PPErXyNCysH_d9Yd9VeBYN6XLl3KZobi5LHbWAoT5XE2u3aEuE5V3tIdhpIAjdOM987jl1hgm9MUZBZpeXXFIO8K3cBSXYEFS8UcEsiapy0r1-5SXsaDUhfw28_vFrr0QAEzcTeoyMnNno_c0-QoXAgNisJvKi68el7sgDUbNnp2PHGQ-pBWixes8NY3sTD8svw7OgzNe2rib1YvKp3gL6fVPYfqAES_ciHuKsTSNLS4UDTAB3JGtsw4Gs72oHzityfMH0on4otrjEtX-q1rRX6WZd-KeGDWPjDPC-0-w4BUxlkxToW5p6mSHIsY1IxlcRC35kb1y7d5yYsREVcxZUuiJuqbPPhHZQWG4RjyAFuaW8ukATKLwT-7wXPlMC3BpUx7wL8hN5DxYMfrPSKI8dIeqG9Xe321x21sIATEWJMTd-rGIYM136JO5JqY0Th_mJW3Vfl1tsvyVnCBjN08ajkgksJ7FYVQE5_MFU9PqKoJTzzevt7IHi4bAyCLj2ODpHcj6ZhYaFyQZ6if2T5nB1JEe7wjzg9cOTONA27hsVW_UDauvOKkopKmghKQm5ONTdxgH6KoZmntUrSUhjQmMITOdyiHGmF92T8UvtNE8p988VngvCvaaWHp-aCviVI6kwYoA1gvXz-5zIxilSf77Dzi-VRcl4ecj6cyBsIldIksxvJFZCYk4BmK__Ert8AKOh72oSK6xBFFNqDr085TEt4d9OuTKjQ3k0QQHWFLmXBwTiADsjedv83OCgW9wNjTmJqJmNC524iYc3X6T7KpiTF7B09xurONor-U54itwWNq09flGQ8wuxfpLmSmx2XkreixMPYoGViND7oCCtFXjo1UB4Km_wCsekwdjf0Jq_ixGE59jphnhy-O1liupg68kGBnCNzNBj6ItnUUkcbL82UYdQ1lzH1DBwfpwStEJpBUUkVh9K9euUZuhSudw1JxjhVRgS7_q11oNHqWWE9C9xxpc3fuBgdoFVDmBzp_mvnqsaimaTeKwxissliG2HUeIMpfrGSWlEg6LnuRTXawoTulSrtCadDGlx0YLF9b3vtXtA3NMY714sy6XS2mnoc_STB7JWk45bwcf3bjtwNmWdQftvYJXF3LxJStF7Jslth5nJZeN-_YeGqwpLlfy_RG0Fq7AwPjW-a8FsZ6TDGlQL_F-8HP9kd0KPsHcEwDgqXuVIwcoHZzSjHpwnZGsh7WRCniKt2B-zvyH6Xx1_y2_ZDuhiM3uOBqEylH5j1WlRX8h6MNEgz3tR2qIzqtzfMAGClKPobnGVmny8KtltvIQ0Sh4fh4O_b4WxC_3vAa_x-JZM8piYBGrK5CW8XrP63TA-xeMYy3bp3yfSfMzZ8u1BMJjvyohxFIZUA_T4Ca8oIDP3X7k7BdJEGTw4Jbxwau223R78zjUiwIdwDKEepymeU-T_TvnLw9J-GJUy9XG8pLbVKu5Umildfe6yEMyz598DjpX_faiPPHC6AVhjFRYqzM8hKE6HfMYqkmu6wyi3dgSUhFf6kMDvtXZvE_Sc="
+        },
+        {
+          "id": "msg_0e4b2a5a417145a9006a683a96f68c81939e5dcbbc6a5a744f",
+          "content": [
+            {
+              "annotations": [],
+              "text": "THOUGHT: I\u2019ll inspect the proxy auth header construction in requests to see where Python\u2019s URL parsing differences could break credentials.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '330,440p' requests/adapters.py\"}",
+          "call_id": "call_Uhp9d64HkUb4igG4GkCUnYZZ",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0e4b2a5a417145a9006a683a9748188193b7ce4a11804e1c4e",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 3946,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 372,
+        "output_tokens_details": {
+          "reasoning_tokens": 302,
+          "text_tokens": null
+        },
+        "total_tokens": 4318,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785215639,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '330,440p' requests/adapters.py",
+            "tool_call_id": "call_Uhp9d64HkUb4igG4GkCUnYZZ"
+          }
+        ],
+        "cost": 0.0121135,
+        "timestamp": 1785215639.8359218
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "    def request_url(self, request, proxies):\n        \"\"\"Obtain the url to use when making the final request.\n\n        If the message is being sent through a HTTP proxy, the full URL has to\n        be used. Otherwise, we should only use the path portion of the URL.\n\n        This should not be called from user code, and is only exposed for use\n        when subclassing the\n        :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.\n\n        :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.\n        :param proxies: A dictionary of schemes or schemes and hosts to proxy URLs.\n        :rtype: str\n        \"\"\"\n        proxy = select_proxy(request.url, proxies)\n        scheme = urlparse(request.url).scheme\n\n        is_proxied_http_request = (proxy and scheme != 'https')\n        using_socks_proxy = False\n        if proxy:\n            proxy_scheme = urlparse(proxy).scheme.lower()\n            using_socks_proxy = proxy_scheme.startswith('socks')\n\n        url = request.path_url\n        if is_proxied_http_request and not using_socks_proxy:\n            url = urldefragauth(request.url)\n\n        return url\n\n    def add_headers(self, request, **kwargs):\n        \"\"\"Add any headers needed by the connection. As of v2.0 this does\n        nothing by default, but is left for overriding by users that subclass\n        the :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.\n\n        This should not be called from user code, and is only exposed for use\n        when subclassing the\n        :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.\n\n        :param request: The :class:`PreparedRequest <PreparedRequest>` to add headers to.\n        :param kwargs: The keyword arguments from the call to send().\n        \"\"\"\n        pass\n\n    def proxy_headers(self, proxy):\n        \"\"\"Returns a dictionary of the headers to add to any request sent\n        through a proxy. This works with urllib3 magic to ensure that they are\n        correctly sent to the proxy, rather than in a tunnelled request if\n        CONNECT is being used.\n\n        This should not be called from user code, and is only exposed for use\n        when subclassing the\n        :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.\n\n        :param proxy: The url of the proxy being used for this request.\n        :rtype: dict\n        \"\"\"\n        headers = {}\n        username, password = get_auth_from_url(proxy)\n\n        if username:\n            headers['Proxy-Authorization'] = _basic_auth_str(username,\n                                                             password)\n\n        return headers\n\n    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):\n        \"\"\"Sends PreparedRequest object. Returns Response object.\n\n        :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.\n        :param stream: (optional) Whether to stream the request content.\n        :param timeout: (optional) How long to wait for the server to send\n            data before giving up, as a float, or a :ref:`(connect timeout,\n            read timeout) <timeouts>` tuple.\n        :type timeout: float or tuple or urllib3 Timeout object\n        :param verify: (optional) Either a boolean, in which case it controls whether\n            we verify the server's TLS certificate, or a string, in which case it\n            must be a path to a CA bundle to use\n        :param cert: (optional) Any user-provided SSL certificate to be trusted.\n        :param proxies: (optional) The proxies dictionary to apply to the request.\n        :rtype: requests.Response\n        \"\"\"\n\n        try:\n            conn = self.get_connection(request.url, proxies)\n        except LocationValueError as e:\n            raise InvalidURL(e, request=request)\n\n        self.cert_verify(conn, request.url, verify, cert)\n        url = self.request_url(request, proxies)\n        self.add_headers(request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies)\n\n        chunked = not (request.body is None or 'Content-Length' in request.headers)\n\n        if isinstance(timeout, tuple):\n            try:\n                connect, read = timeout\n                timeout = TimeoutSauce(connect=connect, read=read)\n            except ValueError as e:\n                # this may raise a string formatting error.\n                err = (\"Invalid timeout {}. Pass a (connect, read) \"\n                       \"timeout tuple, or a single float to set \"\n                       \"both timeouts to the same value\".format(timeout))\n                raise ValueError(err)\n        elif isinstance(timeout, TimeoutSauce):\n            pass\n        else:\n            timeout = TimeoutSauce(connect=timeout, read=timeout)\n\n        try:\n            if not chunked:\n                resp = conn.urlopen(\n",
+        "returncode": 0,
+        "timestamp": 1785215639.9541728,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_Uhp9d64HkUb4igG4GkCUnYZZ",
+      "output": "<returncode>0</returncode>\n<output>\n    def request_url(self, request, proxies):\n        \"\"\"Obtain the url to use when making the final request.\n\n        If the message is being sent through a HTTP proxy, the full URL has to\n        be used. Otherwise, we should only use the path portion of the URL.\n\n        This should not be called from user code, and is only exposed for use\n        when subclassing the\n        :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.\n\n        :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.\n        :param proxies: A dictionary of schemes or schemes and hosts to proxy URLs.\n        :rtype: str\n        \"\"\"\n        proxy = select_proxy(request.url, proxies)\n        scheme = urlparse(request.url).scheme\n\n        is_proxied_http_request = (proxy and scheme != 'https')\n        using_socks_proxy = False\n        if proxy:\n            proxy_scheme = urlparse(proxy).scheme.lower()\n            using_socks_proxy = proxy_scheme.startswith('socks')\n\n        url = request.path_url\n        if is_proxied_http_request and not using_socks_proxy:\n            url = urldefragauth(request.url)\n\n        return url\n\n    def add_headers(self, request, **kwargs):\n        \"\"\"Add any headers needed by the connection. As of v2.0 this does\n        nothing by default, but is left for overriding by users that subclass\n        the :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.\n\n        This should not be called from user code, and is only exposed for use\n        when subclassing the\n        :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.\n\n        :param request: The :class:`PreparedRequest <PreparedRequest>` to add headers to.\n        :param kwargs: The keyword arguments from the call to send().\n        \"\"\"\n        pass\n\n    def proxy_headers(self, proxy):\n        \"\"\"Returns a dictionary of the headers to add to any request sent\n        through a proxy. This works with urllib3 magic to ensure that they are\n        correctly sent to the proxy, rather than in a tunnelled request if\n        CONNECT is being used.\n\n        This should not be called from user code, and is only exposed for use\n        when subclassing the\n        :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.\n\n        :param proxy: The url of the proxy being used for this request.\n        :rtype: dict\n        \"\"\"\n        headers = {}\n        username, password = get_auth_from_url(proxy)\n\n        if username:\n            headers['Proxy-Authorization'] = _basic_auth_str(username,\n                                                             password)\n\n        return headers\n\n    def send(self, request, stream=False, timeout=None, verify=True, cert=None, proxies=None):\n        \"\"\"Sends PreparedRequest object. Returns Response object.\n\n        :param request: The :class:`PreparedRequest <PreparedRequest>` being sent.\n        :param stream: (optional) Whether to stream the request content.\n        :param timeout: (optional) How long to wait for the server to send\n            data before giving up, as a float, or a :ref:`(connect timeout,\n            read timeout) <timeouts>` tuple.\n        :type timeout: float or tuple or urllib3 Timeout object\n        :param verify: (optional) Either a boolean, in which case it controls whether\n            we verify the server's TLS certificate, or a string, in which case it\n            must be a path to a CA bundle to use\n        :param cert: (optional) Any user-provided SSL certificate to be trusted.\n        :param proxies: (optional) The proxies dictionary to apply to the request.\n        :rtype: requests.Response\n        \"\"\"\n\n        try:\n            conn = self.get_connection(request.url, proxies)\n        except LocationValueError as e:\n            raise InvalidURL(e, request=request)\n\n        self.cert_verify(conn, request.url, verify, cert)\n        url = self.request_url(request, proxies)\n        self.add_headers(request, stream=stream, timeout=timeout, verify=verify, cert=cert, proxies=proxies)\n\n        chunked = not (request.body is None or 'Content-Length' in request.headers)\n\n        if isinstance(timeout, tuple):\n            try:\n                connect, read = timeout\n                timeout = TimeoutSauce(connect=connect, read=read)\n            except ValueError as e:\n                # this may raise a string formatting error.\n                err = (\"Invalid timeout {}. Pass a (connect, read) \"\n                       \"timeout tuple, or a single float to set \"\n                       \"both timeouts to the same value\".format(timeout))\n                raise ValueError(err)\n        elif isinstance(timeout, TimeoutSauce):\n            pass\n        else:\n            timeout = TimeoutSauce(connect=timeout, read=timeout)\n\n        try:\n            if not chunked:\n                resp = conn.urlopen(\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGU0YjJhNWE0MTcxNDVhOTAwNmE2ODNhOTgxZjM0ODE5M2E2YmM2YjhhNzliNWJlN2U=",
+      "created_at": 1785215640,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0e4b2a5a417145a9006a683a989a00819383cc89a8e1ef411e",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaDqac2o2rS0DXAl0hJWmjOhefb1CE9eGT20JTGZb98Lvbo1AWOywI3xiPPDJxSWN89E-wo-4oTmsVv888Ghs9L1f2DZs6Co0yMH74piE0ZZaN5FppOs2LZeBF0MzUuM9qn4rMlM7x99pMx6CRhvrlVjUjM9vyeL5XhyLaU8u5FZG7FFSw4wa2D_SCjMC4lh_iy5j8m5KZVYnTajwB7dY3i86u1WrpSAQH7PVz4mceetVfINadJwfPYxjkBpHrRWZ2PgXTv-KCBKs3Ml6PuWdDjW97PEUKx8x4DpBRbLkuDz14r8ZqJYjZKhgSI8dyn59a7p8Pcg6OkFLczBU-WG_Ty9iOO62-lpsc8cboRwcAZxyVUKcGCcWuCPG0nkc-RQNiQcwoM-vmcmdiRgK-f5p86c877PRsrM85POy7DuN2YywKwwDolfz63X2Yd74rxp6ipzhzKZxg8m8lwongo4BAOPYK5mxsvxciX5_wwSdJoUeWtfRiZYxSDQiE-50Iv6hgdasXWpoLZR6SxBU7S3FK44vDmb6PHZu-HxdiOrWcy9RS4zsX1eSv1wd_9GhGsKyph6swSqM9SkPY1EjQL9iD1lHNFEwVM2U4qFtZR_cdYDyDBadn4rMjiHd1N_avcd-TDF-8T7eZ1de6xhGuoIumJ2gTEpvoay7Sket83SzWTd_29zY_cimF8_XNwFijaM09UF3AFc46339E1RBVL9lRYMhPJcXNkPuOQvdE9OluxoCeKL-DQyHZ4s03H6BjkNn2hyuknMVIJ2ZNT9xwJgHhljLpe31XjSUN1XUaxsb7FgV5xplpFjOXqxdD_p6Zs_fXy-YFJkSWW_YyNG7sDZ3LeCPdJiW5jgubO7Aj-5O1fVXlDT8lV-pGfsoxp7JjqBAlrvtGaJIJrWvQB9WXcn8nB_khH-9eMI_To7sMCx372n9qQSRSuKa6todtiFo4rS3_1bxAGwEPdHq8bUjP9COH5fHzScMhAp-tGpbQHMUUHV15q3TUE2kmRmwUmNNgFwuURoRHR5zRJOxePNRKheW_8TV_J3W17809Dp-wjiJ4V2GITxCl98CuO8FUPOKzQi3F61xlXVLJDaQOxFCw_nFT5CXqQ=="
+        },
+        {
+          "id": "msg_0e4b2a5a417145a9006a683a98fb048193a805d92c89f1f4d0",
+          "content": [
+            {
+              "annotations": [],
+              "text": "THOUGHT: Next I\u2019ll inspect `get_auth_from_url`, since a parsing bug there would directly cause missing/invalid proxy credentials and a 407.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && grep -RIn \\\"def get_auth_from_url\\\" -n requests && sed -n '1010,1085p' requests/utils.py\"}",
+          "call_id": "call_P0o6UdoqiCV9Wy7RSNkROJIi",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0e4b2a5a417145a9006a683a99694481938233c142dd48ba66",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 5347,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 3584,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 124,
+        "output_tokens_details": {
+          "reasoning_tokens": 32,
+          "text_tokens": null
+        },
+        "total_tokens": 5471,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785215641,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && grep -RIn \"def get_auth_from_url\" -n requests && sed -n '1010,1085p' requests/utils.py",
+            "tool_call_id": "call_P0o6UdoqiCV9Wy7RSNkROJIi"
+          }
+        ],
+        "cost": 0.0054484500000000005,
+        "timestamp": 1785215642.164799
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "requests/utils.py:985:def get_auth_from_url(url):\n\n    :param header: tuple, in the format (name, value).\n    \"\"\"\n    name, value = header\n\n    if isinstance(value, bytes):\n        pat = _CLEAN_HEADER_REGEX_BYTE\n    else:\n        pat = _CLEAN_HEADER_REGEX_STR\n    try:\n        if not pat.match(value):\n            raise InvalidHeader(\"Invalid return character or leading space in header: %s\" % name)\n    except TypeError:\n        raise InvalidHeader(\"Value for header {%s: %s} must be of type str or \"\n                            \"bytes, not %s\" % (name, value, type(value)))\n\n\ndef urldefragauth(url):\n    \"\"\"\n    Given a url remove the fragment and the authentication part.\n\n    :rtype: str\n    \"\"\"\n    scheme, netloc, path, params, query, fragment = urlparse(url)\n\n    # see func:`prepend_scheme_if_needed`\n    if not netloc:\n        netloc, path = path, netloc\n\n    netloc = netloc.rsplit('@', 1)[-1]\n\n    return urlunparse((scheme, netloc, path, params, query, ''))\n\n\ndef rewind_body(prepared_request):\n    \"\"\"Move file pointer back to its recorded starting position\n    so it can be read again on redirect.\n    \"\"\"\n    body_seek = getattr(prepared_request.body, 'seek', None)\n    if body_seek is not None and isinstance(prepared_request._body_position, integer_types):\n        try:\n            body_seek(prepared_request._body_position)\n        except (IOError, OSError):\n            raise UnrewindableBodyError(\"An error occurred when rewinding request \"\n                                        \"body for redirect.\")\n    else:\n        raise UnrewindableBodyError(\"Unable to rewind request body for redirect.\")\n",
+        "returncode": 0,
+        "timestamp": 1785215642.290929,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_P0o6UdoqiCV9Wy7RSNkROJIi",
+      "output": "<returncode>0</returncode>\n<output>\nrequests/utils.py:985:def get_auth_from_url(url):\n\n    :param header: tuple, in the format (name, value).\n    \"\"\"\n    name, value = header\n\n    if isinstance(value, bytes):\n        pat = _CLEAN_HEADER_REGEX_BYTE\n    else:\n        pat = _CLEAN_HEADER_REGEX_STR\n    try:\n        if not pat.match(value):\n            raise InvalidHeader(\"Invalid return character or leading space in header: %s\" % name)\n    except TypeError:\n        raise InvalidHeader(\"Value for header {%s: %s} must be of type str or \"\n                            \"bytes, not %s\" % (name, value, type(value)))\n\n\ndef urldefragauth(url):\n    \"\"\"\n    Given a url remove the fragment and the authentication part.\n\n    :rtype: str\n    \"\"\"\n    scheme, netloc, path, params, query, fragment = urlparse(url)\n\n    # see func:`prepend_scheme_if_needed`\n    if not netloc:\n        netloc, path = path, netloc\n\n    netloc = netloc.rsplit('@', 1)[-1]\n\n    return urlunparse((scheme, netloc, path, params, query, ''))\n\n\ndef rewind_body(prepared_request):\n    \"\"\"Move file pointer back to its recorded starting position\n    so it can be read again on redirect.\n    \"\"\"\n    body_seek = getattr(prepared_request.body, 'seek', None)\n    if body_seek is not None and isinstance(prepared_request._body_position, integer_types):\n        try:\n            body_seek(prepared_request._body_position)\n        except (IOError, OSError):\n            raise UnrewindableBodyError(\"An error occurred when rewinding request \"\n                                        \"body for redirect.\")\n    else:\n        raise UnrewindableBodyError(\"Unable to rewind request body for redirect.\")\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGU0YjJhNWE0MTcxNDVhOTAwNmE2ODNhOWE3MmI4ODE5M2ExZDZhZTc1NjBlMDk2YWY=",
+      "created_at": 1785215642,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0e4b2a5a417145a9006a683a9b29f481939f15937a80c97878",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaDqcD7EjCvXYcB-JZtzb26OYbF9y4q3au8GydaFiwFvO_H0EaU6IBaQpTxXvjlUwIpRunKmBQ37jIcL_S2m8tXEAsT96nNvGR3KV_KuT-_VmIAE2Bu_T6JYfRaQkPWjRzjIffpIKbSPPRLIVfXu8fsIWMNZ0DtxggZUb8ThLIwRDNugrZ7mnUY2KNThznNMj0RBSYaXLoY9Fd6EVnAz1TAlYtkPkQaUGzWiAHzzPR-AnRI-Cc_JfbDkLwQrd5jQvy8D_zGvhlcjtqvMlAWbIdALv4ifq2P_hpZwcz5BYnXVwEvdDfem8djccl55EgTxAnZJ6ibRYy1MB67UtJHhvC0XfsUPb-uMxuxo_3qgJENCKRxMzZX9zMkWGgJwSagMpeyoKxSyy79Ww_czUyHrgmM9I8Os000vJArP063gvZ6LTOJ6EZUrTZu7SLXSDtoZVRUhKblrf891EaeQnPBerm8ZwTrwq7Jv5--YXxN_gKvKfTJUb20f2J6JjiYBB4HhSD4QMoJz5ammsD85Xtlu99zckNBVvRk8hRjesCiZq07Rr-Oq4G7LDaVkTnDSDq65FpBaAmPesQaOx6CcfJYoHStOdC4407NHz6IvH85YlecZ5k-dRTpuuQqhUx0GfkBPv2peH5VqwhntwMdONvLd_jtko6-xGtQwjZFBrgvOWuI0kL3Fx9A_-p8UlBt0TODJn4NYkjRu_QBcGvZHPCCLlYcLYngD0NSg8u9_SWhaSxo9ipceoNp-GkPLrdG5cPw8WCjqptTXFf5WWMxh5DoJY_PHQEPtrG6MVtdyf9R-glmnlMpe3yPTi1caYklftJjn00nc_xO9lU92sm2UYOsYFncFSAkllfcj92TfPwTUS8KMXHtYLEZnvqH8T8BYB0jUz1MsscmjXcPODXJ6FSIpohHZ7I5vSJnaFJamjFgoozP9L_bjS8CMUKhwpioLfP_Yf4FBaqcCzYLYV4j8OYoawxuU1xt6BJaMakSYKExfqVAFXo6BI4L7JhZ2g7dGUbj9Be2NpGmalFqG9pHRC3a0D0KmZmw=="
+        },
+        {
+          "id": "msg_0e4b2a5a417145a9006a683a9b6b8081938d12fd9280ea7d09",
+          "content": [
+            {
+              "annotations": [],
+              "text": "THOUGHT: I need the actual `get_auth_from_url` body to confirm whether URL parsing changed in Python 3.8.12 breaks it.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '955,1015p' requests/utils.py\"}",
+          "call_id": "call_9nHRelxUzarikeWdWTFO6yal",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0e4b2a5a417145a9006a683a9bcf648193817057003287341a",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 5879,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 4608,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 99,
+        "output_tokens_details": {
+          "reasoning_tokens": 23,
+          "text_tokens": null
+        },
+        "total_tokens": 5978,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785215644,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '955,1015p' requests/utils.py",
+            "tool_call_id": "call_9nHRelxUzarikeWdWTFO6yal"
+          }
+        ],
+        "cost": 0.00441665,
+        "timestamp": 1785215644.3433259
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "            return 'utf-32-le'\n        # Did not detect a valid UTF-32 ascii-range character\n    return None\n\n\ndef prepend_scheme_if_needed(url, new_scheme):\n    \"\"\"Given a URL that may or may not have a scheme, prepend the given scheme.\n    Does not replace a present scheme with the one provided as an argument.\n\n    :rtype: str\n    \"\"\"\n    parsed = parse_url(url)\n    scheme, auth, host, port, path, query, fragment = parsed\n\n    # A defect in urlparse determines that there isn't a netloc present in some\n    # urls. We previously assumed parsing was overly cautious, and swapped the\n    # netloc and path. Due to a lack of tests on the original defect, this is\n    # maintained with parse_url for backwards compatibility.\n    netloc = parsed.netloc\n    if not netloc:\n        netloc, path = path, netloc\n\n    if scheme is None:\n        scheme = new_scheme\n    if path is None:\n        path = ''\n\n    return urlunparse((scheme, netloc, path, '', query, fragment))\n\n\ndef get_auth_from_url(url):\n    \"\"\"Given a url with authentication components, extract them into a tuple of\n    username,password.\n\n    :rtype: (str,str)\n    \"\"\"\n    parsed = urlparse(url)\n\n    try:\n        auth = (unquote(parsed.username), unquote(parsed.password))\n    except (AttributeError, TypeError):\n        auth = ('', '')\n\n    return auth\n\n\n# Moved outside of function to avoid recompile every call\n_CLEAN_HEADER_REGEX_BYTE = re.compile(b'^\\\\S[^\\\\r\\\\n]*$|^$')\n_CLEAN_HEADER_REGEX_STR = re.compile(r'^\\S[^\\r\\n]*$|^$')\n\n\ndef check_header_validity(header):\n    \"\"\"Verifies that header value is a string which doesn't contain\n    leading whitespace or return characters. This prevents unintended\n    header injection.\n\n    :param header: tuple, in the format (name, value).\n    \"\"\"\n    name, value = header\n\n    if isinstance(value, bytes):\n",
+        "returncode": 0,
+        "timestamp": 1785215644.4684439,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_9nHRelxUzarikeWdWTFO6yal",
+      "output": "<returncode>0</returncode>\n<output>\n            return 'utf-32-le'\n        # Did not detect a valid UTF-32 ascii-range character\n    return None\n\n\ndef prepend_scheme_if_needed(url, new_scheme):\n    \"\"\"Given a URL that may or may not have a scheme, prepend the given scheme.\n    Does not replace a present scheme with the one provided as an argument.\n\n    :rtype: str\n    \"\"\"\n    parsed = parse_url(url)\n    scheme, auth, host, port, path, query, fragment = parsed\n\n    # A defect in urlparse determines that there isn't a netloc present in some\n    # urls. We previously assumed parsing was overly cautious, and swapped the\n    # netloc and path. Due to a lack of tests on the original defect, this is\n    # maintained with parse_url for backwards compatibility.\n    netloc = parsed.netloc\n    if not netloc:\n        netloc, path = path, netloc\n\n    if scheme is None:\n        scheme = new_scheme\n    if path is None:\n        path = ''\n\n    return urlunparse((scheme, netloc, path, '', query, fragment))\n\n\ndef get_auth_from_url(url):\n    \"\"\"Given a url with authentication components, extract them into a tuple of\n    username,password.\n\n    :rtype: (str,str)\n    \"\"\"\n    parsed = urlparse(url)\n\n    try:\n        auth = (unquote(parsed.username), unquote(parsed.password))\n    except (AttributeError, TypeError):\n        auth = ('', '')\n\n    return auth\n\n\n# Moved outside of function to avoid recompile every call\n_CLEAN_HEADER_REGEX_BYTE = re.compile(b'^\\\\S[^\\\\r\\\\n]*$|^$')\n_CLEAN_HEADER_REGEX_STR = re.compile(r'^\\S[^\\r\\n]*$|^$')\n\n\ndef check_header_validity(header):\n    \"\"\"Verifies that header value is a string which doesn't contain\n    leading whitespace or return characters. This prevents unintended\n    header injection.\n\n    :param header: tuple, in the format (name, value).\n    \"\"\"\n    name, value = header\n\n    if isinstance(value, bytes):\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGU0YjJhNWE0MTcxNDVhOTAwNmE2ODNhOWNhNGZjODE5M2E2NTg5YmNkYTM5NTFjYTQ=",
+      "created_at": 1785215644,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0e4b2a5a417145a9006a683a9d3a3081938f52b305c3596cfc",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaDqfLTuDYH_UbL6_r-Bt-ALbScpm3LyeIQ4klZheeHvNWoGRzusPWlh7Bkt4m0uuKgWabzJbDGcSvryMhfYIVBDwe-cPdx2zlPbtq4Fex23j6ldF136xsIpK8JVoVRYF08oPf4vHoX52t23RtdhoqpRx8_ouvt0XGh3bOOpSsg1aDMjp5DzGJuP78A6Z9hAHNvJ_d9Iqa90yyt2Ol_Bmj4cfr2Ptectv-RnB52cxhKuOgSW2Kop_duzzljDKvE8IlN1JavVuPku7oZ0wY7kO6Hjk0d7RFl83GhxeCCEQs7UqVYBG-xGfqFEHbfv8_FWMUV5X7U9GJUbjpzNttcppmW92gWN_nYddGp3W2Gk9nB6AP5VZXYZ9VQUa-Ngdu3X4FN4h5DWgcbI_8dLezGq0RC8J8HAa8i8EG1bbp2LmPQSDWlXV3DcGBhaisboZmj_Uq9GPshyEUQVjaxUacFFAIYZtU6OfJuKmYDwCIgzyA81-ZkkC_TVrX5EDp5VAJWT3D-Y-JATDD3rf5gg7T6muGN6i-VWqzt9aRxqrxypUYskcA2sWSP5xwRMZbIekwBCoRTwPXH3lF-HrKobxi6DdGo2Dh_xwSMbPvjoJnHthqsHKkq0SJSX_tTKQUyMmDhyne8raJHFUFB5XEdCj37Fd7jqzkRjBmxrNe8_aJkj3WjtnApPIXkLtJf1ZjIHQevzmPkrgbkV6_ZwiqUqRffKB6FIxV2p97AsbM7Y3zmkaywOK9I90h7eORV8kYKiUrDpVudMPoNo1G11yP8wZeYmINvCDPvDCM2xxBrRwqo98UR3oHrX5aNmA0ycLTSyO1DClKuROEOUjE1tTzdYPS5Mn77PyywaHLWOGHFsTSOg86omJR47cgEe2g5EBYDm8UIa5X2cUcdlKNs110kCvywx0Vf_jEa7wbCyp8bYYri5GNAQ_g0ewZs7TJVnn3wY_hnL0xdJfVxxGxcfrTChq06vpJ_R48UFkzQWCHcTwC2FMFPECOMwkj0ujQFkFfBl8k3uoZM_QrqVpKEWScyeBeuyBu4dkdpzStOlypBC5LJCIIkXQGSQ2TXIjHFyhc2bl5UN5Kntq9KtZOwmEQlCCTQd-zwhGxi9FjIk092z31tur13A0g2Up6ZTOXz5Rejrz2iIhy1a5WTRMQozcZ_f2MDPnoI5sWUFL5xQmaT8LoXSJ9YgexS7vTN1I4BXV0GPWAWhvdnYjJvNib7oDk44Etsj01EYAVHa3rajH3bSJTVTdwF-zg_SUyGyxylQcmc6i3uG2HcGMGEDX8xLg5nrX45aJ0OOif9vP4inVk1wYANzA4jtHXEpfvjOKciRgCgZfD8ce2luCv-CL-9HVTWJfh2YIQExhvO32ao9e-Zb1Sr6iKLUj47obhqZWbWIWitv8ZN_ubP35CXwVASMWjABeShKK6WdiMHIWvrGy_KQgP0bCzcMwJM44fKXnfRLpnHBOOJZoE7id"
+        },
+        {
+          "id": "msg_0e4b2a5a417145a9006a683a9e4b7c8193a4b0c3ea4b6d2f3d",
+          "content": [
+            {
+              "annotations": [],
+              "text": "THOUGHT: I\u2019ll check tests around proxy auth/get_auth parsing to identify the missing case tied to the reported regression.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '1860,1925p' tests/test_requests.py && sed -n '530,630p' tests/test_requests.py\"}",
+          "call_id": "call_stlGwUAudER2jdAS2VK5Jqts",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0e4b2a5a417145a9006a683a9eac9c8193aff388a1de7f3697",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 6442,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 5632,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 173,
+        "output_tokens_details": {
+          "reasoning_tokens": 88,
+          "text_tokens": null
+        },
+        "total_tokens": 6615,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785215647,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '1860,1925p' tests/test_requests.py && sed -n '530,630p' tests/test_requests.py",
+            "tool_call_id": "call_stlGwUAudER2jdAS2VK5Jqts"
+          }
+        ],
+        "cost": 0.004825100000000001,
+        "timestamp": 1785215647.360489
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "    def test_unconsumed_session_response_closes_connection(self, httpbin):\n        s = requests.session()\n\n        with contextlib.closing(s.get(httpbin('stream/4'), stream=True)) as response:\n            pass\n\n        assert response._content_consumed is False\n        assert response.raw.closed\n\n    @pytest.mark.xfail\n    def test_response_iter_lines_reentrant(self, httpbin):\n        \"\"\"Response.iter_lines() is not reentrant safe\"\"\"\n        r = requests.get(httpbin('stream/4'), stream=True)\n        assert r.status_code == 200\n\n        next(r.iter_lines())\n        assert len(list(r.iter_lines())) == 3\n\n    def test_session_close_proxy_clear(self, mocker):\n        proxies = {\n          'one': mocker.Mock(),\n          'two': mocker.Mock(),\n        }\n        session = requests.Session()\n        mocker.patch.dict(session.adapters['http://'].proxy_manager, proxies)\n        session.close()\n        proxies['one'].clear.assert_called_once_with()\n        proxies['two'].clear.assert_called_once_with()\n\n    def test_proxy_auth(self):\n        adapter = HTTPAdapter()\n        headers = adapter.proxy_headers(\"http://user:pass@httpbin.org\")\n        assert headers == {'Proxy-Authorization': 'Basic dXNlcjpwYXNz'}\n\n    def test_proxy_auth_empty_pass(self):\n        adapter = HTTPAdapter()\n        headers = adapter.proxy_headers(\"http://user:@httpbin.org\")\n        assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}\n\n    def test_response_json_when_content_is_None(self, httpbin):\n        r = requests.get(httpbin('/status/204'))\n        # Make sure r.content is None\n        r.status_code = 0\n        r._content = False\n        r._content_consumed = False\n\n        assert r.content is None\n        with pytest.raises(ValueError):\n            r.json()\n\n    def test_response_without_release_conn(self):\n        \"\"\"Test `close` call for non-urllib3-like raw objects.\n        Should work when `release_conn` attr doesn't exist on `response.raw`.\n        \"\"\"\n        resp = requests.Response()\n        resp.raw = StringIO.StringIO('test')\n        assert not resp.raw.closed\n        resp.close()\n        assert resp.raw.closed\n\n    def test_empty_stream_with_auth_does_not_set_content_length_header(self, httpbin):\n        \"\"\"Ensure that a byte stream with size 0 will not set both a Content-Length\n        and Transfer-Encoding header.\n        \"\"\"\n        auth = ('user', 'pass')\n        url = httpbin('post')\n            # Connecting to an unknown domain should raise a ConnectionError\n            ('http://doesnotexist.google.com', ConnectionError),\n            # Connecting to an invalid port should raise a ConnectionError\n            ('http://localhost:1', ConnectionError),\n            # Inputing a URL that cannot be parsed should raise an InvalidURL error\n            ('http://fe80::5054:ff:fe5a:fc0', InvalidURL)\n        ))\n    def test_errors(self, url, exception):\n        with pytest.raises(exception):\n            requests.get(url, timeout=1)\n\n    def test_proxy_error(self):\n        # any proxy related error (address resolution, no route to host, etc) should result in a ProxyError\n        with pytest.raises(ProxyError):\n            requests.get('http://localhost:1', proxies={'http': 'non-resolvable-address'})\n\n    def test_proxy_error_on_bad_url(self, httpbin, httpbin_secure):\n        with pytest.raises(InvalidProxyURL):\n            requests.get(httpbin_secure(), proxies={'https': 'http:/badproxyurl:3128'})\n\n        with pytest.raises(InvalidProxyURL):\n            requests.get(httpbin(), proxies={'http': 'http://:8080'})\n\n        with pytest.raises(InvalidProxyURL):\n            requests.get(httpbin_secure(), proxies={'https': 'https://'})\n\n        with pytest.raises(InvalidProxyURL):\n            requests.get(httpbin(), proxies={'http': 'http:///example.com:8080'})\n\n    def test_respect_proxy_env_on_send_self_prepared_request(self, httpbin):\n        with override_environ(http_proxy=INVALID_PROXY):\n            with pytest.raises(ProxyError):\n                session = requests.Session()\n                request = requests.Request('GET', httpbin())\n                session.send(request.prepare())\n\n    def test_respect_proxy_env_on_send_session_prepared_request(self, httpbin):\n        with override_environ(http_proxy=INVALID_PROXY):\n            with pytest.raises(ProxyError):\n                session = requests.Session()\n                request = requests.Request('GET', httpbin())\n                prepared = session.prepare_request(request)\n                session.send(prepared)\n\n    def test_respect_proxy_env_on_send_with_redirects(self, httpbin):\n        with override_environ(http_proxy=INVALID_PROXY):\n            with pytest.raises(ProxyError):\n                session = requests.Session()\n                url = httpbin('redirect/1')\n                print(url)\n                request = requests.Request('GET', url)\n                session.send(request.prepare())\n\n    def test_respect_proxy_env_on_get(self, httpbin):\n        with override_environ(http_proxy=INVALID_PROXY):\n            with pytest.raises(ProxyError):\n                session = requests.Session()\n                session.get(httpbin())\n\n    def test_respect_proxy_env_on_request(self, httpbin):\n        with override_environ(http_proxy=INVALID_PROXY):\n            with pytest.raises(ProxyError):\n                session = requests.Session()\n                session.request(method='GET', url=httpbin())\n\n    def test_proxy_authorization_preserved_on_request(self, httpbin):\n        proxy_auth_value = \"Bearer XXX\"\n        session = requests.Session()\n        session.headers.update({\"Proxy-Authorization\": proxy_auth_value})\n        resp = session.request(method='GET', url=httpbin('get'))\n        sent_headers = resp.json().get('headers', {})\n\n        assert sent_headers.get(\"Proxy-Authorization\") == proxy_auth_value\n\n    def test_basicauth_with_netrc(self, httpbin):\n        auth = ('user', 'pass')\n        wrong_auth = ('wronguser', 'wrongpass')\n        url = httpbin('basic-auth', 'user', 'pass')\n\n        old_auth = requests.sessions.get_netrc_auth\n\n        try:\n            def get_netrc_auth_mock(url):\n                return auth\n            requests.sessions.get_netrc_auth = get_netrc_auth_mock\n\n            # Should use netrc and work.\n            r = requests.get(url)\n            assert r.status_code == 200\n\n            # Given auth should override and fail.\n            r = requests.get(url, auth=wrong_auth)\n            assert r.status_code == 401\n\n            s = requests.session()\n\n            # Should use netrc and work.\n            r = s.get(url)\n            assert r.status_code == 200\n\n            # Given auth should override and fail.\n",
+        "returncode": 0,
+        "timestamp": 1785215647.4940991,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_stlGwUAudER2jdAS2VK5Jqts",
+      "output": "<returncode>0</returncode>\n<output>\n    def test_unconsumed_session_response_closes_connection(self, httpbin):\n        s = requests.session()\n\n        with contextlib.closing(s.get(httpbin('stream/4'), stream=True)) as response:\n            pass\n\n        assert response._content_consumed is False\n        assert response.raw.closed\n\n    @pytest.mark.xfail\n    def test_response_iter_lines_reentrant(self, httpbin):\n        \"\"\"Response.iter_lines() is not reentrant safe\"\"\"\n        r = requests.get(httpbin('stream/4'), stream=True)\n        assert r.status_code == 200\n\n        next(r.iter_lines())\n        assert len(list(r.iter_lines())) == 3\n\n    def test_session_close_proxy_clear(self, mocker):\n        proxies = {\n          'one': mocker.Mock(),\n          'two': mocker.Mock(),\n        }\n        session = requests.Session()\n        mocker.patch.dict(session.adapters['http://'].proxy_manager, proxies)\n        session.close()\n        proxies['one'].clear.assert_called_once_with()\n        proxies['two'].clear.assert_called_once_with()\n\n    def test_proxy_auth(self):\n        adapter = HTTPAdapter()\n        headers = adapter.proxy_headers(\"http://user:pass@httpbin.org\")\n        assert headers == {'Proxy-Authorization': 'Basic dXNlcjpwYXNz'}\n\n    def test_proxy_auth_empty_pass(self):\n        adapter = HTTPAdapter()\n        headers = adapter.proxy_headers(\"http://user:@httpbin.org\")\n        assert headers == {'Proxy-Authorization': 'Basic dXNlcjo='}\n\n    def test_response_json_when_content_is_None(self, httpbin):\n        r = requests.get(httpbin('/status/204'))\n        # Make sure r.content is None\n        r.status_code = 0\n        r._content = False\n        r._content_consumed = False\n\n        assert r.content is None\n        with pytest.raises(ValueError):\n            r.json()\n\n    def test_response_without_release_conn(self):\n        \"\"\"Test `close` call for non-urllib3-like raw objects.\n        Should work when `release_conn` attr doesn't exist on `response.raw`.\n        \"\"\"\n        resp = requests.Response()\n        resp.raw = StringIO.StringIO('test')\n        assert not resp.raw.closed\n        resp.close()\n        assert resp.raw.closed\n\n    def test_empty_stream_with_auth_does_not_set_content_length_header(self, httpbin):\n        \"\"\"Ensure that a byte stream with size 0 will not set both a Content-Length\n        and Transfer-Encoding header.\n        \"\"\"\n        auth = ('user', 'pass')\n        url = httpbin('post')\n            # Connecting to an unknown domain should raise a ConnectionError\n            ('http://doesnotexist.google.com', ConnectionError),\n            # Connecting to an invalid port should raise a ConnectionError\n            ('http://localhost:1', ConnectionError),\n            # Inputing a URL that cannot be parsed should raise an InvalidURL error\n            ('http://fe80::5054:ff:fe5a:fc0', InvalidURL)\n        ))\n    def test_errors(self, url, exception):\n        with pytest.raises(exception):\n            requests.get(url, timeout=1)\n\n    def test_proxy_error(self):\n        # any proxy related error (address resolution, no route to host, etc) should result in a ProxyError\n        with pytest.raises(ProxyError):\n            requests.get('http://localhost:1', proxies={'http': 'non-resolvable-address'})\n\n    def test_proxy_error_on_bad_url(self, httpbin, httpbin_secure):\n        with pytest.raises(InvalidProxyURL):\n            requests.get(httpbin_secure(), proxies={'https': 'http:/badproxyurl:3128'})\n\n        with pytest.raises(InvalidProxyURL):\n            requests.get(httpbin(), proxies={'http': 'http://:8080'})\n\n        with pytest.raises(InvalidProxyURL):\n            requests.get(httpbin_secure(), proxies={'https': 'https://'})\n\n        with pytest.raises(InvalidProxyURL):\n            requests.get(httpbin(), proxies={'http': 'http:///example.com:8080'})\n\n    def test_respect_proxy_env_on_send_self_prepared_request(self, httpbin):\n        with override_environ(http_proxy=INVALID_PROXY):\n            with pytest.raises(ProxyError):\n                session = requests.Session()\n                request = requests.Request('GET', httpbin())\n                session.send(request.prepare())\n\n    def test_respect_proxy_env_on_send_session_prepared_request(self, httpbin):\n        with override_environ(http_proxy=INVALID_PROXY):\n            with pytest.raises(ProxyError):\n                session = requests.Session()\n                request = requests.Request('GET', httpbin())\n                prepared = session.prepare_request(request)\n                session.send(prepared)\n\n    def test_respect_proxy_env_on_send_with_redirects(self, httpbin):\n        with override_environ(http_proxy=INVALID_PROXY):\n            with pytest.raises(ProxyError):\n                session = requests.Session()\n                url = httpbin('redirect/1')\n                print(url)\n                request = requests.Request('GET', url)\n                session.send(request.prepare())\n\n    def test_respect_proxy_env_on_get(self, httpbin):\n        with override_environ(http_proxy=INVALID_PROXY):\n            with pytest.raises(ProxyError):\n                session = requests.Session()\n                session.get(httpbin())\n\n    def test_respect_proxy_env_on_request(self, httpbin):\n        with override_environ(http_proxy=INVALID_PROXY):\n            with pytest.raises(ProxyError):\n                session = requests.Session()\n                session.request(method='GET', url=httpbin())\n\n    def test_proxy_authorization_preserved_on_request(self, httpbin):\n        proxy_auth_value = \"Bearer XXX\"\n        session = requests.Session()\n        session.headers.update({\"Proxy-Authorization\": proxy_auth_value})\n        resp = session.request(method='GET', url=httpbin('get'))\n        sent_headers = resp.json().get('headers', {})\n\n        assert sent_headers.get(\"Proxy-Authorization\") == proxy_auth_value\n\n    def test_basicauth_with_netrc(self, httpbin):\n        auth = ('user', 'pass')\n        wrong_auth = ('wronguser', 'wrongpass')\n        url = httpbin('basic-auth', 'user', 'pass')\n\n        old_auth = requests.sessions.get_netrc_auth\n\n        try:\n            def get_netrc_auth_mock(url):\n                return auth\n            requests.sessions.get_netrc_auth = get_netrc_auth_mock\n\n            # Should use netrc and work.\n            r = requests.get(url)\n            assert r.status_code == 200\n\n            # Given auth should override and fail.\n            r = requests.get(url, auth=wrong_auth)\n            assert r.status_code == 401\n\n            s = requests.session()\n\n            # Should use netrc and work.\n            r = s.get(url)\n            assert r.status_code == 200\n\n            # Given auth should override and fail.\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGU0YjJhNWE0MTcxNDVhOTAwNmE2ODNhOWZhZjBjODE5Mzg3ZjQ5NTE3NjQyZWVhYmQ=",
+      "created_at": 1785215647,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0e4b2a5a417145a9006a683aa02fb08193b8474d9941351705",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaDqhDmrMJS9f984ieALwY7OEotQSry8J3yx06AvHQVP5ivKZuOjhd76D3EPkpkq1OEI0uu_H1I-gAaOBrZ-lnzYd0JZu61d47YIBxBg9Ei_VPX1uxPY6nMamfnOHjpgHVnS3WV0iiF_KDzDZmbmJKPiNgrO_GDJcMhNOd5T30L-R8PqzoTwR_7PxdWztZxxOkv60amBSYLeor3TxMrVASZahOSz7bekrE_D3-nv8cZX9f-TP5mVOQZdp1rTBS06TiUyFqcZaPOAA3Q4ypsqV5aWdpnuHDo_ATjFLbIOsKR2Sivrg_DKqovoZOyziP7uDcY1MZ1RKwSidljV2GAJUte1f9osIORNBHLNVnKYLDOk45AW44mO70s94FLC0Rv8EW4PjL21uPFNMFt2lSxJmkYWpQfkeP2EUsgFJONxOhdyI_CuGYcfVMcy-xS7uSm4O2WQIKiOGI7yJeSk4i7RZGhstMbTCEa5akczQqkO7tJxqutr0i1qTVgNhBU_cbeqClGgOk4V5NbqmWiDn-Z3mCIF6KEtm8Y9BSkub_iGsV0pLng9T7n4cXAS3UUBuQ_ynkqpst6ZT88M0V2cQNGZzufXX_GbBrySUt9asv8Bq-tjElkz1Rkx8yUSsa-NgBh5o-PJ6PFVzkScrMB0OFoSkvBCm4ZEJIjx5UxBrY4Q_-7alwfAsreBNAknovtggDYpIUfPX1y_enp4HJF3GXFlr5xRLmC4NWZtb1e1geHSn8mbOQb3-A7wD3SWRt6ZzH46V09JzW7YI7NGCcFWm26Osmj3Ccjb_u3pmJqjmt49O40J9bAmz5v9wfzn_o3oW6252FeDtK123ojCnAUuQAz-mTobFFJCR7vV0A-O0pbFq2-NOKaAF1khslAQL3vYr-D6vb1GDov36de7yEt5l0RUAgVURmVTEU4Yz8GWlMj2udMZ7gEq78MPOTCqU-yGGR6Gx651Dk_GkW0B_PY1H_sioLQVqNNZ65xu5jMi6tRLErKm68Okn7PdjOLAFSEsu2r4Yhnx0_OF-tNEaSA9HBKEB00-cgV2cv6OQY62hTWvto3wHMdqFPvhyJ2liWMcuTvk6qeVZ_7FkeWecxiugPET29P1HuFslQxvWKr399ozRUz0eBxPBQ5NS6P_ibmR4EpvIFAZF8jsvCDIxMNq0UKSJzjQcvayn5IVQHqx6nRidYWZIdMc="
+        },
+        {
+          "id": "msg_0e4b2a5a417145a9006a683aa0bd3081939b18576b2e1775bd",
+          "content": [
+            {
+              "annotations": [],
+              "text": "THOUGHT: I\u2019ll inspect `Session.rebuild_proxies`, since HTTPS proxy auth is managed there and can produce 407 if headers are attached incorrectly.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '250,340p' requests/sessions.py\"}",
+          "call_id": "call_SbGTNoA2on6sWEoKmCHxMw2a",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0e4b2a5a417145a9006a683aa116008193b32ef1fc8d2c7610",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 8043,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 5632,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 117,
+        "output_tokens_details": {
+          "reasoning_tokens": 41,
+          "text_tokens": null
+        },
+        "total_tokens": 8160,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785215649,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '250,340p' requests/sessions.py",
+            "tool_call_id": "call_SbGTNoA2on6sWEoKmCHxMw2a"
+          }
+        ],
+        "cost": 0.006842849999999999,
+        "timestamp": 1785215649.6595464
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "                # extract redirect url, if any, for the next loop\n                url = self.get_redirect_target(resp)\n                yield resp\n\n    def rebuild_auth(self, prepared_request, response):\n        \"\"\"When being redirected we may want to strip authentication from the\n        request to avoid leaking credentials. This method intelligently removes\n        and reapplies authentication where possible to avoid credential loss.\n        \"\"\"\n        headers = prepared_request.headers\n        url = prepared_request.url\n\n        if 'Authorization' in headers and self.should_strip_auth(response.request.url, url):\n            # If we get redirected to a new host, we should strip out any\n            # authentication headers.\n            del headers['Authorization']\n\n        # .netrc might have more auth for us on our new host.\n        new_auth = get_netrc_auth(url) if self.trust_env else None\n        if new_auth is not None:\n            prepared_request.prepare_auth(new_auth)\n\n    def rebuild_proxies(self, prepared_request, proxies):\n        \"\"\"This method re-evaluates the proxy configuration by considering the\n        environment variables. If we are redirected to a URL covered by\n        NO_PROXY, we strip the proxy configuration. Otherwise, we set missing\n        proxy keys for this URL (in case they were stripped by a previous\n        redirect).\n\n        This method also replaces the Proxy-Authorization header where\n        necessary.\n\n        :rtype: dict\n        \"\"\"\n        headers = prepared_request.headers\n        scheme = urlparse(prepared_request.url).scheme\n        new_proxies = resolve_proxies(prepared_request, proxies, self.trust_env)\n\n        if 'Proxy-Authorization' in headers:\n            del headers['Proxy-Authorization']\n\n        try:\n            username, password = get_auth_from_url(new_proxies[scheme])\n        except KeyError:\n            username, password = None, None\n\n        if username and password:\n            headers['Proxy-Authorization'] = _basic_auth_str(username, password)\n\n        return new_proxies\n\n    def rebuild_method(self, prepared_request, response):\n        \"\"\"When being redirected we may want to change the method of the request\n        based on certain specs or browser behavior.\n        \"\"\"\n        method = prepared_request.method\n\n        # https://tools.ietf.org/html/rfc7231#section-6.4.4\n        if response.status_code == codes.see_other and method != 'HEAD':\n            method = 'GET'\n\n        # Do what the browsers do, despite standards...\n        # First, turn 302s into GETs.\n        if response.status_code == codes.found and method != 'HEAD':\n            method = 'GET'\n\n        # Second, if a POST is responded to with a 301, turn it into a GET.\n        # This bizarre behaviour is explained in Issue 1704.\n        if response.status_code == codes.moved and method == 'POST':\n            method = 'GET'\n\n        prepared_request.method = method\n\n\nclass Session(SessionRedirectMixin):\n    \"\"\"A Requests session.\n\n    Provides cookie persistence, connection-pooling, and configuration.\n\n    Basic Usage::\n\n      >>> import requests\n      >>> s = requests.Session()\n      >>> s.get('https://httpbin.org/get')\n      <Response [200]>\n\n    Or as a context manager::\n\n      >>> with requests.Session() as s:\n      ...     s.get('https://httpbin.org/get')\n      <Response [200]>\n",
+        "returncode": 0,
+        "timestamp": 1785215649.7817178,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_SbGTNoA2on6sWEoKmCHxMw2a",
+      "output": "<returncode>0</returncode>\n<output>\n                # extract redirect url, if any, for the next loop\n                url = self.get_redirect_target(resp)\n                yield resp\n\n    def rebuild_auth(self, prepared_request, response):\n        \"\"\"When being redirected we may want to strip authentication from the\n        request to avoid leaking credentials. This method intelligently removes\n        and reapplies authentication where possible to avoid credential loss.\n        \"\"\"\n        headers = prepared_request.headers\n        url = prepared_request.url\n\n        if 'Authorization' in headers and self.should_strip_auth(response.request.url, url):\n            # If we get redirected to a new host, we should strip out any\n            # authentication headers.\n            del headers['Authorization']\n\n        # .netrc might have more auth for us on our new host.\n        new_auth = get_netrc_auth(url) if self.trust_env else None\n        if new_auth is not None:\n            prepared_request.prepare_auth(new_auth)\n\n    def rebuild_proxies(self, prepared_request, proxies):\n        \"\"\"This method re-evaluates the proxy configuration by considering the\n        environment variables. If we are redirected to a URL covered by\n        NO_PROXY, we strip the proxy configuration. Otherwise, we set missing\n        proxy keys for this URL (in case they were stripped by a previous\n        redirect).\n\n        This method also replaces the Proxy-Authorization header where\n        necessary.\n\n        :rtype: dict\n        \"\"\"\n        headers = prepared_request.headers\n        scheme = urlparse(prepared_request.url).scheme\n        new_proxies = resolve_proxies(prepared_request, proxies, self.trust_env)\n\n        if 'Proxy-Authorization' in headers:\n            del headers['Proxy-Authorization']\n\n        try:\n            username, password = get_auth_from_url(new_proxies[scheme])\n        except KeyError:\n            username, password = None, None\n\n        if username and password:\n            headers['Proxy-Authorization'] = _basic_auth_str(username, password)\n\n        return new_proxies\n\n    def rebuild_method(self, prepared_request, response):\n        \"\"\"When being redirected we may want to change the method of the request\n        based on certain specs or browser behavior.\n        \"\"\"\n        method = prepared_request.method\n\n        # https://tools.ietf.org/html/rfc7231#section-6.4.4\n        if response.status_code == codes.see_other and method != 'HEAD':\n            method = 'GET'\n\n        # Do what the browsers do, despite standards...\n        # First, turn 302s into GETs.\n        if response.status_code == codes.found and method != 'HEAD':\n            method = 'GET'\n\n        # Second, if a POST is responded to with a 301, turn it into a GET.\n        # This bizarre behaviour is explained in Issue 1704.\n        if response.status_code == codes.moved and method == 'POST':\n            method = 'GET'\n\n        prepared_request.method = method\n\n\nclass Session(SessionRedirectMixin):\n    \"\"\"A Requests session.\n\n    Provides cookie persistence, connection-pooling, and configuration.\n\n    Basic Usage::\n\n      >>> import requests\n      >>> s = requests.Session()\n      >>> s.get('https://httpbin.org/get')\n      <Response [200]>\n\n    Or as a context manager::\n\n      >>> with requests.Session() as s:\n      ...     s.get('https://httpbin.org/get')\n      <Response [200]>\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGU0YjJhNWE0MTcxNDVhOTAwNmE2ODNhYTIwMDVjODE5M2ExODg1Zjk3Nzk2Y2NhMzU=",
+      "created_at": 1785215650,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0e4b2a5a417145a9006a683aa29e5c8193aebdd0297df8a6be",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaDqlDJVbAMnPknOKsZnZKjLG2POWbEBdj4A4iYxklLtlfPUSene1DEM_diqh9cJesOsGRJ8Nui8rLmx1ODR0XzGRQeF2T4vthxRaqAP_670Pf1ArZ0-wqWsanXkoOI-Up94uQ6lWThCXy_Q7ASldcWiSgLorNKkNYJGxPVzxjORwDsjwDd7tRwCvP3L1VY0xkcDLDZcPwBrPxrVyZ7hRYbkHHLIPiV0hC7v5QaDis7WBsbuntMjhtsCXggINZ20PXRY7totFsUqxP9CfwTIDfnsmGvg6tpjyqOu-Zhhc2OpwtvtJijyy695f79sI5ZMEGP8l0945x1VjhgI0ar0WZNEHmMjy47XnzXfQYyL1qK8gNe9IIlRyKx407OBHpsaqByXGhEW-MR_UfO0fMZg7cFI9gLnnudNFvasTaxpaoBipGMfTgzMfXBE8MDg6e9ZNNFiAOLHqLQUrc1mPWr_N1HaO3FG7y2odaJ7b27eUGSk8pFH6j4KlX2jjuFVlttEIQWkdUPFw83MJHVkPHymNMehRYxE8E3MNBmfVFITEKnBfiFJHAjM5qPMNlvRpU2tjEEa9EWm6e3Ia-lIWdtFo7Y6f_BDQWdSeJfh50E9VR3bJGakGb-VZxxoyiMxqWXH00kHsPwznAA0dplIhR2dJ5scxk-9uTbWKKL-mpPBpyN-w62JLGU0pUgPiYnx-qx658FFndsCzRtN8fgsB8HfZ06hQqXSRUl--jAPdxk1l2Ly0dK74VJVBIDwuX0qnVT7T2aQTlkG7jt5WSo_ehk6ehvB9mWWFez0DUN4AV3q18m5-LRQ-cjStKSeZaLOF-ZFvRc0vOYfDRRetaIqNlNBQ-yLaUGtmLaopRrJTlVk0q5leDo8KQX8JGltIUScFbRwWnQGgBhQhRMHIGNNFcuIsV9PHkWqG9kCG9WCu5tRgOC2Lm3vRH_hzlT9jUQzarsvvqNIBkiEQwDX_ygZNnE_r3bnPbKHY3gjpp5-5mhO2aK8aiLyUe-lzM59IJMYzjstDdsaGThhIfS_0hs0MNDyr74iQbnMuuZDZSNaEjTFdg6WRoNk2Ho4uF088ymIDq1t8Xpv0iW2S5Xt_vg3HOV8nJmiHrrC0OtQjHSW9BzN3zGSA_dsIGK_UDLz54SK65RX3-dmaH3zAoibqhd-TwxzG7SmL6AqxdiD43WyCy0yFQHplzZg_o0IRpSgSYetk1zaqMFX_sEkgRK_RbouOLjsX4JheHrcYAZXtWBYSstovLpN8N47ZGLIanQ9GhYvZq8T1Syh2Cslc8A7Cj97nWHSg_3awI06iD8iO6PPSIYc0hWbNxJs8B67brABlIiyr6BKxbBWt7bAVeLtgrxkskCjn2RkIu1-26lLIg6uIin6Prt1qUoQs9MaUQPZ6_XW3ueGCbNISHSCEFfZuTE4-akVzOZYcatbA3UDB0L6uC_JqQJSONzFPpUm0UZHyBmv8foXWZwKS9YzSoDEBzeMs2JSBjGzENQG0U8oiY6sdVGOfFHaGKYfAwGROL7wSj0ThDQPDQ3eTsyoYDiLEX_XGy7KKojTegWV_AQsbBbNDqaQ-qyGQiQXfiHtSLmYCnkGt5KGT8VIrww2H-0P6sgvHtTNvjDPZqUoWa5tnfNciHvnNy6pdY1R7DTybn7f9RTRot6DOsEb6hjm5TIBS8njw04wsFeOgmsUl05MqMKILQuGcAmvTLb6hktaJ8ls3kjM_KGhdAprVO4_DN1KK030J1NSEkyjldHPsJkl2uLkji9kxkOtIM2QcyHT7DvV4Ytp3nzWkhf0O1NUnMNUw9-o_EP4-Jga86lyBeOaQztvBzhhYrivu67xKJ31I-j-gV4huQeOk_FE3Y9t_Prcla-24RDRKHKZoyqCaM_FTGO3laXym7ZGwzOg="
+        },
+        {
+          "id": "msg_0e4b2a5a417145a9006a683aa44ea48193a1818e7eae177fde",
+          "content": [
+            {
+              "annotations": [],
+              "text": "THOUGHT: I\u2019ll check where `proxy_headers` are passed into urllib3, because the 3.8.12 regression likely depends on how auth data reaches the proxy manager for CONNECT.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '260,335p' requests/adapters.py\"}",
+          "call_id": "call_DlJxk0aJ5gh31PBBE5a6VTLL",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0e4b2a5a417145a9006a683aa4c0cc81938456f2751164c728",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 8878,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 7680,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 225,
+        "output_tokens_details": {
+          "reasoning_tokens": 141,
+          "text_tokens": null
+        },
+        "total_tokens": 9103,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785215653,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '260,335p' requests/adapters.py",
+            "tool_call_id": "call_DlJxk0aJ5gh31PBBE5a6VTLL"
+          }
+        ],
+        "cost": 0.0065905,
+        "timestamp": 1785215653.3049476
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "        :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`\n\n        :param req: The :class:`PreparedRequest <PreparedRequest>` used to generate the response.\n        :param resp: The urllib3 response object.\n        :rtype: requests.Response\n        \"\"\"\n        response = Response()\n\n        # Fallback to None if there's no status_code, for whatever reason.\n        response.status_code = getattr(resp, 'status', None)\n\n        # Make headers case-insensitive.\n        response.headers = CaseInsensitiveDict(getattr(resp, 'headers', {}))\n\n        # Set encoding.\n        response.encoding = get_encoding_from_headers(response.headers)\n        response.raw = resp\n        response.reason = response.raw.reason\n\n        if isinstance(req.url, bytes):\n            response.url = req.url.decode('utf-8')\n        else:\n            response.url = req.url\n\n        # Add new cookies from the server.\n        extract_cookies_to_jar(response.cookies, req, resp)\n\n        # Give the Response some context.\n        response.request = req\n        response.connection = self\n\n        return response\n\n    def get_connection(self, url, proxies=None):\n        \"\"\"Returns a urllib3 connection for the given URL. This should not be\n        called from user code, and is only exposed for use when subclassing the\n        :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.\n\n        :param url: The URL to connect to.\n        :param proxies: (optional) A Requests-style dictionary of proxies used on this request.\n        :rtype: urllib3.ConnectionPool\n        \"\"\"\n        proxy = select_proxy(url, proxies)\n\n        if proxy:\n            proxy = prepend_scheme_if_needed(proxy, 'http')\n            proxy_url = parse_url(proxy)\n            if not proxy_url.host:\n                raise InvalidProxyURL(\"Please check proxy URL. It is malformed\"\n                                      \" and could be missing the host.\")\n            proxy_manager = self.proxy_manager_for(proxy)\n            conn = proxy_manager.connection_from_url(url)\n        else:\n            # Only scheme should be lower case\n            parsed = urlparse(url)\n            url = parsed.geturl()\n            conn = self.poolmanager.connection_from_url(url)\n\n        return conn\n\n    def close(self):\n        \"\"\"Disposes of any internal state.\n\n        Currently, this closes the PoolManager and any active ProxyManager,\n        which closes any pooled connections.\n        \"\"\"\n        self.poolmanager.clear()\n        for proxy in self.proxy_manager.values():\n            proxy.clear()\n\n    def request_url(self, request, proxies):\n        \"\"\"Obtain the url to use when making the final request.\n\n        If the message is being sent through a HTTP proxy, the full URL has to\n        be used. Otherwise, we should only use the path portion of the URL.\n\n",
+        "returncode": 0,
+        "timestamp": 1785215653.4323974,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_DlJxk0aJ5gh31PBBE5a6VTLL",
+      "output": "<returncode>0</returncode>\n<output>\n        :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`\n\n        :param req: The :class:`PreparedRequest <PreparedRequest>` used to generate the response.\n        :param resp: The urllib3 response object.\n        :rtype: requests.Response\n        \"\"\"\n        response = Response()\n\n        # Fallback to None if there's no status_code, for whatever reason.\n        response.status_code = getattr(resp, 'status', None)\n\n        # Make headers case-insensitive.\n        response.headers = CaseInsensitiveDict(getattr(resp, 'headers', {}))\n\n        # Set encoding.\n        response.encoding = get_encoding_from_headers(response.headers)\n        response.raw = resp\n        response.reason = response.raw.reason\n\n        if isinstance(req.url, bytes):\n            response.url = req.url.decode('utf-8')\n        else:\n            response.url = req.url\n\n        # Add new cookies from the server.\n        extract_cookies_to_jar(response.cookies, req, resp)\n\n        # Give the Response some context.\n        response.request = req\n        response.connection = self\n\n        return response\n\n    def get_connection(self, url, proxies=None):\n        \"\"\"Returns a urllib3 connection for the given URL. This should not be\n        called from user code, and is only exposed for use when subclassing the\n        :class:`HTTPAdapter <requests.adapters.HTTPAdapter>`.\n\n        :param url: The URL to connect to.\n        :param proxies: (optional) A Requests-style dictionary of proxies used on this request.\n        :rtype: urllib3.ConnectionPool\n        \"\"\"\n        proxy = select_proxy(url, proxies)\n\n        if proxy:\n            proxy = prepend_scheme_if_needed(proxy, 'http')\n            proxy_url = parse_url(proxy)\n            if not proxy_url.host:\n                raise InvalidProxyURL(\"Please check proxy URL. It is malformed\"\n                                      \" and could be missing the host.\")\n            proxy_manager = self.proxy_manager_for(proxy)\n            conn = proxy_manager.connection_from_url(url)\n        else:\n            # Only scheme should be lower case\n            parsed = urlparse(url)\n            url = parsed.geturl()\n            conn = self.poolmanager.connection_from_url(url)\n\n        return conn\n\n    def close(self):\n        \"\"\"Disposes of any internal state.\n\n        Currently, this closes the PoolManager and any active ProxyManager,\n        which closes any pooled connections.\n        \"\"\"\n        self.poolmanager.clear()\n        for proxy in self.proxy_manager.values():\n            proxy.clear()\n\n    def request_url(self, request, proxies):\n        \"\"\"Obtain the url to use when making the final request.\n\n        If the message is being sent through a HTTP proxy, the full URL has to\n        be used. Otherwise, we should only use the path portion of the URL.\n\n</output>"
+    },
+    {
+      "role": "user",
+      "content": "STOP INVESTIGATING \u2014 you have enough information now. Your NEXT response must issue exactly ONE command: write your COMPLETE implementation plan to /plan.md using the heredoc form (cat > /plan.md <<'PLAN_EOF' ... PLAN_EOF). Name specific files, functions, and concrete edits, specific enough to implement without re-investigating. Do not run any other command."
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGU0YjJhNWE0MTcxNDVhOTAwNmE2ODNhYTVhMzRjODE5Mzk4MDcyODM4YmEwYmJhOGY=",
+      "created_at": 1785215653,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0e4b2a5a417145a9006a683aa66be48193920c58db0f41dd77",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaDsCL7Y8upGMdgAiQbWJv22jHfJvrsvFi2LjnOL8XThNKUXm1QacGAU4wSq6fuVEw8lBabv2QV8ICXR3Z56eT4T9sqIaAwPRnDe5McQWHerL5YtX5hVCJ3AY9FQHvnA3idC3XMPQk9LnRkQ06NLXAvPndKoRhnZfwe10dAycsOVWy9iQIhzQQN56qnOoZF1af_tqAVPx3KNX04ADgiWoI8_nlHZsJO8cEpcd7H5PXfv_sKbUxMWULdx9DkEZqE5uxt8Bd8jmtm0nQ3Q_IVFal1inQ5X_Q1g3mizW3zPLwLJWVouqvSXqUa3oQ8DMK0FkK1PCgO4B6qSGptd4SO5x1af6ze9MHPUqgsfAswe5sd8F1OQY3b2zvCwH6KTpIiWQXTlh7H7r9QN9iilNmlKnVcWLF6WwxPhLHZLhlMwMTVuc0l0gBVknlVGuLb2T5BEre0KXSQ9oo86_d9pLSNfEzumiWCYmoPUtwrkJ12W8WWq-XPIk8e5Qg_IZMZQFBWl311yfa9mlH4BWmfhSocVdQUqjv5u-zmeX2960jJNdyB_kpCn4rwt6SWYF_vcbX90oLTe9d7SJwIyWnpJM_jRRfjdAaZXaEzNww3u8MMWXIl_MLn9UHLb8lpQ1vosn6sWamILkCSC5onlvIdz2Y6kHCsc3s1lrvai6vKzwywdS1Vd51lTiQ4CCb54IhdX1bOfj6jguuFcEx7_j_f7SmtGcPEJAjCpsDwcX-CG-70SQl3xAxgt9fcNmYklvr_Ai6Tx3dLYAMbr4d8A-7cD7Rp10e58KatRHWhIUxujKAn2hpnLPmNLO00CLUGfw8-fz7BuuP_-ZjQsUjFa1K-VPpzCXkr3q2TEkBAKyB-9Mz6LSloHBCDY3xdeKm8xGFrU2Ce4ljNrkvRnz4iX5SWgtb0jFl5BLj41ieN5_Q_2sglgErNRlwyvdR8RNIaGzHrknQebKIHmVBIElZEvqqbSuMjbesMdIV6Kp46oBeb1vxbeYvNaB7ZQWNsTpW37RH4vpiQC3suJG4X_F678Szm3BXbkRoyzEm2wObCZkK04g7AI7SHYNSfbTJtCzOyhD_ma0oOCY1KNrvmTtcem8C2k8RFJMiC-wusxavzrw7fDgWWWPtLdgIZm3QYWpbDPBB7K4DpUXc0cQm7n3hPgv-WG-vUp7i5ZTxTwKoPqEsr5C4zzNdvpZGRCNoNARaRO9bl79OReqqIMa6cHpBWlOYJ_Zz3DMf5xFH1s5X0oyxq99heaSJ2yxMr3GLM1RKaLL6XtSyOdksKLbO_jZqNrIjmX5WHBkq3BRTCPva0NnXDXBh62A88xH6NxvS8xZ4p5rR5yn9LJWERwgMDO6YC2tphdvovgJVs7yB9cyLsZGnWbfpv3dpIPTr3QN15LqYndK1nZM2RW-i7-Kd5BzbJHK28Fza91d01aHGlTDDkVDDiQRVgHqmRlcmS5MtanjbNvlN9vFcx6ycbgiVk1kZJ81Bp_vmvl0MUfwnXoygBEMJyGvA9DIcg2eeXN6sywDro5ifAu6xgID8LmORIP9h89e7-OKjL_SXSogcA7yKbPVBwnorDWwo75qerYZBrc1UA5VbwFMj3-b80q2-Zt33JrdU_UNh-oawK4f59imyvynP91iedBoPUK7APoKOddQTJ3fxsspcSuZ11VwoIsshVG4joDtBEiZB9Bho-VbY8TLoHVY2FCPgPnDV1s1Xk3z935HGrEWDoOWb74GBV_29jAiEijO6DNH_WyeMIGgufdNVefUtL2QESpDVymfW0SitzqzG1FjloB5wxcLXdMF7eqVoAJ_TpI7vsofj7YLwDCCYQ7nN5-FNEb_D5ZDFJbd7IiJ9jY-GHjzHcEPsEyc13-jGPzfUE5rVRqSqqrKa43y9T3QvpthER2ENW1f3O9k3-towmgJMWS8U7BuwRK0eMixDa6PIXPWunaX4NuqszSXK2HdnjnV45fZEYs2MQXexxtTR8d7AASYmVWBHrxCDQ2-S2H-2E8VWXKH0ZWbCxdba44oyrmiaAWcD2JkntJkNihd9eDTMLBtR7uI-TbcFayU5Sql3sd9POgp6XM71nRw03kIAV7lwxVHx_Jnq-F0L2fKKhTSx-HfQT9B5e825alS7y9Iam6Afhur544xcTrXS2GYzD3BVXZnMNEwmwhc0PCMT2ECH469jQsO1_QeJML-pNZ6oftjJZtfNA_ix7JOWJ6YoUCLtqOi8cFMcHBEfow5KSnrkLHNK3A4vupiuhcMgq3IpQMfsVGSdnL_APkDQre1KVyKq2RJ_5b5LcCh-aaAcokEn_q3gbzkdyYLz_FkPwXcjJHWXOcUFNG0_nWPFbgWlAnwF9cjBp-Z_0gB9JMO1kiz41iY1cUsjmQC5FAWcb4F8hAfw1lV-S1vqBi3hU-2ABQkzZ5Wvjvy4t9mS4d1tV0Bv3z18ZOWK3c6Oas0_SK5vnFM25K634p9fEG7IaKmN9ppv3zJvDOhJh5sQS-ZwSK5XTQfEksRk5QMc1l5DJpgFZGry2YpLmta9igOdVBX-Nl-ouvOH-jcnvznrAB6t1skLGMo7Ux5vgK2USkGkhxuqbU_pD9PeDjeJ5rvuNvPv79qljoZ32cP2FRMxC37RtnbOezzHo-kysmT_RrJ_7kwNeqQVbK6OfYJr7cDkJGnAjVCAqsVvgd_eCbjE5bKeJCXYqGC7GoUTTCJvWwCvttkVOAv9kEtcM5w0GmZR4-GQPm4IYb7JvszB_6cP0U6chVEiAp3PX0P0_OGdXMb5QjWAQnQwdbxTgHhbllvY_pz14MGXz3VEgOgbggkVvNJlaEBzO_SkNn2wd-G7IIHNmZVUIBeCCu5A8AJwJzHRoI0LC8tWy2s1u-1Cxfd-mZowsBJc4pjXDG-EgXYMY0EgDYCprOkXwZfaTly0LkAuaHbPPts8se1NpoQUqxA54NndWMLu0GqanYABGiQR8huAd1cVfw2A7jCm2JN3wpFYqhsWO2Ynr2W1_b2FImspfe9yYYgmzsXx8sepuTKEuSXnFl93_YIQuyeIh9UUb5IO7Q5uDv3OgXYqvjISRAJyqLeX9kslmysm9t3_1bwXd3JKj5e3HURgq6gkioKMl8JHlS7QPHxu74esq_hH3ra1oI9YxKE1WXLqwtxvZWbw_RKMQcqsaAxeJI00AamTb5dRnrzSZfcMyFTNz9wyrleKswJR4EePLE6q2gaTCwvuGSbdWqYHLuuYyu65WHJuLoYrWcmEV2BO1lDzKK1m3UVV2RNL-StVsIQwMOmn05zxu3peP0M3GWOJehBYQmyrI7WFpdqDtPnEj0O8k27GGVCs2c9h2zMi8NBC5EA33PL0Ppr3FPbI2Leyttgcrnubp2GP0v6IvyDoX3DCYZA8jQ_8pnyu9-VbsWjru9p1Fjifm3A915IgPiLklprAa44lTW2qS8xmtLUuksgtN6UgVRyVTDnpPozOvlfW51UnaHVZHz0m-_HNHHEGBmT6mfjULQ1AFimGRx_tEIjEZkgEeqVw_ldFgWsNYhZXn0gVmk4afKdse1DsoiS30CLheWIhi1JFD2PwsaUck4oBcZFYjg7R9XRiWfAz6UaRHfwTOP7JZPe-FR8ODcr9nZJcBGKmNEHf1VDXH8MNr4RtjM1jjBg8ypRoEjUg8TX2BkdYydCMA0gUvph55FQiKy7qPjU3yJHRVkflWiLn1T-PyGf9O9s3WUBQhN9knNC5i0lUOiBu99uwjap0qcUVvd7Fr7fesRhVRG8O4Rjdz4A2n6SgG-QX5NCKOYz1AdivdN3z2D_awwwSFej0T5y5L88Mae9aB3zWp13SZkpYZ41DK8MTCeO2qeeoJugssqdWMBVzJH37OSnrg1NlnGsyORWpOWYTdIJI_ZGHuphxOPD1FJsBrpCvh8H0JuPAtE5b1SyjS12OLYBnzXV73roYfYzpiwzF73erSjfoSFsx4YBH90pSac-rHAiZ5Nrr04Ask6HsRXzll-8XeVmyDHM_iT-78ylWG84yLUXIVo5uzTP8XRDmJLZH7qq-2vW0tz0dT6b1phKj9To7hD5-D9goNZQaNiCZf1Fz_yudR-WPBezhU_gLiJcdHbs-9yXCmjkWwMxlkf2RpHxcIB5Ben4aVuxTZ8s0-BisV_1RwvUw06iyUg4w6u4rRvsr9uKVXmukD9qjir5MGufqPM0yGNhb8AHNhlt0wSt17DuseIIUv33MzLv3vra2qVpyHe25jkXRjG1XR42y25S15a0qkAwP3QvxnwqPydqDkyfAPbY9buWUFqSMKFekcO2atyN430n4EC4o95yqnFVKPgD-EwbVvmu9jqMREvTF-J1h-IvkSMetbsFjqqviS_o36sZm6LgH2gVQSwP8ERnovf5MpVJWKrIfP8tydiOQMScnLNtoB_MeSw_ojbXx605xBzkNkzUil1xw0xGR1V1pcm7WkyAyF4aml0rbYrInGigDI4h6vJiqHxjTDzmnfwGZDnIUjHo-KgUj9AW0SBE-sYHqP2vakhQMgnkaupGPXac2mohJ6KUX-9z0LFnV1OLX0qRJ9tw3koGm3AdQdoKsrnkOvDI9HNN186ARf0n7JwSLabRiAtY0ND7JSkwpt8530Sk4jg6DpqicvNtuqKIVWN0wpaUxPgxOyCK69KA9mF__1CHo5i39GIK_3lxA5XzQJ5pxO5Sfvpyu9uDqq7n6702WuggIAJsPyre7QCo6MtOTyRqFtaNds4EEhU4DHBU_0G6FUcpL0XCiibQG_8hGQJHleDu5-g9nApO5bNcPRij0snO4ZLRKw661IJ2OcJV0KkzCzCZWdggKLsCqm_2rNWkM8tAoPQTZUCRIZdol40pb-lNmlnhLMdb5n6yFXZfxOqRICHshs7zhLF25UEe9VWjersVlMvSEHlHCp52mRPoi3QUlM78JbXvJXoM5hLeBgBWF5mZldFuNWlJckQ_gpuR6VPhx06fFVpVcOWHNUkWhNRMW1ON1P17_fLhSN2ze7N1uXO6gHf_8Kr3nZF-NqxRpilmR7sF8DwdJMXT8E_qn7_5-wtMFXIAH108gTyIrK4qH01b4aYLOyu8U0WFpLFow2nxtLCpbfg2q_654HUe5PE1v33Fl_TGAQPpGn3kNXWQ_lWN_04og3OsxGehgL7ArrDWt6tbOcR5d1gHFxhLw5-HyO8mIw-qozAIydAM4svhS2g74b7UzXwo4ohI6qTxJDVwpRd5k4vxTuaST4oXVojqnYnANubT9HkxaXkCkRN3lwk1MzxX39Oox8jY8PNRU43Nf1dPMsY6DZFQ7QHy1aEQjb5zGV52F_Nus_t9V6-d2s8cSqyK-DHjzVOfePwGezjz6Dtvwy5_H_8S3NgmMTQveTYQZbxwnYxqZ7YqPJpsvl3ciFwp_UXabjEADPvD3T5dIA0pRX-dK2veb_ShX-uNgdsIjd3FjleR5YF2Q-7pKwPWw9QRaXtVuKvv__oRbxZ-LVuvUazsZPP4fKza_syyiApXMXUnw6dneDpxia9ECa28rPc57Rs7KFMchw6KzCjpFIOndIVGIYwlT9RWKcv4FjJ3eEQKmjcEczwEbdUGwKXoiAH8Me9ygVuTiSORfZD1XJp8dxn8U8GRR6YaZD2Nof7_eu0jYr0fV2yDwPrixoh2N03hTjhVD5QwzXWTWQ_R_-xjZZm41S0VEAxTRxnHD6VhjFhMkf3HjPJG0zk6ilO7OOvAGgrdc-mQu6xR70BTh_6sLTb4G2A2JjNB9Ux6cWrRbBlAidWoXlFxORrkSzmnx80tu9YAQbOy7U8OGUCvhil3wUyEKH1J9vTJ0_p0bB1zR6nuKi8H8bfRyp6M2vXh8w-fXHbuE7Zc8jneq1E1btz3GfNa6g3Y1yPEXMJbBqZVUfhonJ2fy8awGj3Vz5zVJhEl8Tw5gQYFpx5-4gtfyAeTQTdUIulV7A9b-L1kJGvMG7Mv3hPBFvrNq3cKaDIAC16_mz1BHdBP4wPnO5rUKkVESGMq5iyze-VyZXFiWpat3Cs2_Wbtb6cWC2cCF56gJqKmykxNjsi4O882PlntNs180yUUPpZugQt62yqL9p2iQ3rNnRpwOGCMfEo-cJuC4OFanVEZZVcNtKO8cxdCqvuFXxE3pIeezvOE8n7wb8T_etpKOoNr_wTopwVL5ddgSrhy182fy2k2POVx6sdReTpmpSk8ymtCT7cqWXwUzaxGZhT-dI9kR79TYcplkriqzuPCRvk0uBQsY8oUny4FzvwwA6pHhrIU1ZQU_ni1GXq42Iyxw_gGhyoqodLr5y4jDnOpIFWrHL4lMfoCKPazLo1ZdEWDT5Zled2z2efuycVbA7n0VbGUyhZ0P9beLt0gkd5A7kdmIhsK3Zh_fObuJrIpJwHeDzou1tgnN8l6IouwfywuWgmm99wCDut-1YzlJf_L0wvkmqVlCqSeLiD1jiiyr8kfvTsomUAe2Czm5vdv82NNhZaP69Jv-nYKRQxyMDIApreWI77vI1Lz5bxvDvdVxh9NPcYbVdY_FlnoGUTSp5G1H22w7cTxtHvBQqShfnW1uZ4dh2VydlLpARK99xOWYsoa4xaqp9M82Byo_GAJUeU9ZmM974zw6-hkab36Q3UCJ29oAZyonCg4n70XkQubgR8Q4Zo39yU09SSFElx7ALthRJkTsrAtE0dOWApYfPCHCVR4IFJXoX4kr2WbIFm2vsOXe7xSZfYL_tmmU8ZlkQYvPw0DGEcoJi-6haYSi8p3eMNRtJz9VnSMJzurOMKfwkvuReDzzp3LzdLQZJMdHS3iSZ3ehzvS-HQFoYt_I_Od2Zve4TdoGqELttomRSTddZSm-U_vZ1a_DUNB1LWwUUyVDkon2Lnu0MIV-GUdNSxuzlhteF07Nq6thfx-QDWSsIwCcjjDjN565FY1TnPo54m5lB34zScbgfTzRlHb3ExUAzlh4pZx1UBZamMg55-nuXIxnIfMULcBo6v4ugwYKJvEkGIp5n-UAwRVG9ToBG0cT0KdZD3X0yJTeW5-sVj9Nz5p5KD7KoePDzvNr0lEFAi74GM6YOkVq1f2WKzq0OHWdbiND2i_AboWprhW95zL8o9sBAV5zrN0ZmTiDr3GxiU8XXv3KMs7BC5IGRkZYfAfoFclH4MyFNbe-obhgxJhlGvIvxe2W3CegAILueaqGz1yXnCDuI5s3w4xuxC5fTnRoLk8puj_mN7crWlvud-mPZ3REyKx-zCkGDu4V7_JQKk78hNUZyQCs1qsWJ3qDHLL_oCgAAw0LTDv5AbLvPeBX99xx8vJVwccay9egDwQS-9CUFexlnEpt2niOKLezqF9gOANj1m5ZYqb-IBIMKiN6t-FsqJVZ61Yp5QVmA3yCIFZ_SIqU_PfKx2B7lD_cfC2FeizbXcE1xzkfPaTL6gKgGQ5UHy6Km67-f34xe3SDm0C9rawC7XJfGqH1nX_DM034huTLrTVq3RxXo13uaDFyOufMywAOyN9eWsOYZoQa0Fh6qJscpE5HTcJlLOMW1zDA9eyhQY99cqzsDYyIQZOJDOdw8PdtDEb4vHKe5lkEHuCINdim5IB03thoaR2GIaSz9m46lB055_1X2KG3pGPNOZeuNHC1ason39oCm3JwWGH_x-D31rfhSriKyQJe75DWS2pAopVIWABtfEDEHL8qj4cC1Dwmu2v_wRPehe13q6eamfXgICpRugoMOTSGWgg6WeXjdMf_U_DJta9J422lhuXty8N4sgtzxINYtgg0KXt1CI813C5I4JTZMskz8M1sc6sqBBiZ_E3RpwuRJ5nyWC8IszJWVilFVYt392oySZLUHzdaSJv6jDiyVV833xLZ3uwD20DsLul5ynQFrPlkx2rYY6jDPt9HvDkjXaHJyNM7pCOMIp68RWcSKEzjkk3Epgw9j7Lm4od5llz7qClTS2xVbh7FF96hLHm82MUHpPDQ_nOv5P1bCbanDXtTOFJ8ibJRIYR6r0zr_WqlPeCo0Y7J6OB625IZVMHpF898BPgei6-riJ5tSM_rtcGIhtMT4qSh9MW6QPcNnw_BvLtwbPE2g8MJRCqp9-cItXG4nDDhddDi4qi43Ctr0-EfyKf7Ep37gz65nL4q8Lp679k-8ZfbEqFWwQwpNaeX56Dlfg7C1SfSyg_7Bxo05gGgwJH78pPdoj58C4x6LXjL0Q5PvBTwsWMLdZZUP0Rt5EFMIob3ZWZ0AYsxnU6zQzyV652nayEzcp4cTMn89A4cNq6_F1I-IYs0IjLY4Yec0cbV-4gh44aShVmOM3LLaEDd5c97aE3QdhNWaa2Fiosgv9a62OAlX5AO4t8OMkfBp-f9uQAAvLRaGHGnb2C8fZfdSJS3gcCa3vYYeA9JNks9-jXkz_W3nXODwSKNUqB1lTUDwsQytFs9NEhhZR0kQgfLUxj-gpWyn0qhIszGJawDSczYsJ_yzs2azy9gjddGplLPZxzFSeYwrvAcDYMKAB64FzeuTGdKxODvYs7K7-Nr0ITzeetTUUX_H08YKRBsawzikl8nzR7k-1k9hxW_Q-DYABYmKrBiCr5kOi5YcgnpxZLunqucw6ys31JTqd1ZR5DSYJ-Z41bh2HWT4mMuoUDs2wXYnuXnU6ynr6NvRsx8WA-qyZkEq-TRJ5_VdZsF_fbAylhhDEc_sXmIu54SYTVLJNKXo9SkLxU-u9UeGrw4yH5OumIfqo9hR6dzlgqelCm-yPKzpr9-6IkD0zUnxzsEE_sWlLfulGjkCjDq27C8wXBlsEuFRC6BYk8BYMId0UwlBjNYgTfMyPyYrJSXyGxjjomucDGiTcj5PZEdHeD2SrMb_Kl-ZkBllhlSgZTFzyk0jf5nAFVy2aPqszhV_acqhyn63zOf8HihaT8XCheGsHmq4Acwa-6c_5IUrSp4xWEFwGxg8xkfWsvpX1vDLOxPFDdtUfK_Wa_a4Ga9jYLPbxXbHn27ZkdZp8ojMhI6hvab4n_ugT9NuiWaYT1SxonOwUygbJpYvJSstsed7JPdcDVJ1xH50fAvk6e9z2_MjjxwEg-DnzjgoiBSNcPnwn4wL6lIIMW87pxNMpOCZ4ROftyNM1FGAEMQ-X5Z_t6lFstdbL3gCZoX0NFv3NkPcFRvjKWUWmbJDCwvUR8-092INMGEJII6huJgrPPF2L9zg7Ggepi5mEjTYYp06WpWnjjHf4eUksD6hOL84v3r12pWRl9i7An6cdfPn0VO1NIXO0UOAYyVPfQvsLvocRb-osyf02h5ORlZaQU8PLPN8f_PivyV5-OmXguwyTydQwnrv4dHWgvZ8v7PpXCiKKOTL0AuibtT1oJqGN_HRVvxS1WPld19EoJ6blT6tGw6IUplqx5TUUvU5j-svdPaS8vpsBPBtNj7sziaz8PtWbfESuYQDOLEXL00R-gyjJtoYKpM8r0g3PrLux6dlHJxmC7f_2e67mxuYKRFFJD9SgFPprAxU_pZnbHcV12B1UND-KcasvAKne6EFWCIGo5DmHw-QGYYm2844cvYIkH_eZBDxYc_oI_Nw0nj6k7ySOYRhwQAwVqVIBx6zR7ZodyLwfr3LtHfYrbQS1npSK1801Nm297Y6qvnKDgdPRHRhJYVPB8sKQpspn69xtj5sWR8Q6UJEhIWDepA-YgVKe1v_LURG17hEQ6oWXc8cmavby_K31iynimxSg3AAGb1HJkuy4Eaej0TZs9i5UrQK5JQPZwObyuF3aHFZOzw1cbiXn6EDJMjhzBR11RMgg2NFHWiXG5t4XSUxzqeFTzj24peRMDGk3VDiVUBV9a3hofCQwXnqTIGHN4waAlhwyO8BZ-qDGdHPY-wMpc33WsjCr1isNtOeGLbl3a5U2vGZeejl14ECCnEcOHGw6rVGE3U4rYswqneV8pI0f_461quX0r5lwg_CpUs0aGr5Dud0GhrKacvYh2ZfTIJv3ofU_WxAGnCBcTMC5HMersL9jgnuH2pZ4Qjl7R_e8RNggY_9tthyPRyhCijzXP9AatSiDpJiuekafsk-ItgGbTmJBS4Dyswr3ZXStslfEdwjPVwWBx0iv7tweEhbxvlBOt-80ua0EbZukvfDuX2exMrESe6rjP4WX5KZY9SjIRBre4E58wnoWJ2ogD1psc7r1-5QHwVEpZohwdF6XuDk_DHfDTPYk3lIfFAQpxtoAAwHF37YfnaWfll3zFd0aa4B0PUifdXmnRotHAnOLD-vfHk6o_mPn-r__ghVEKLkT01iEhvoXQtvkxJO0bMCjvJf7saQI28rWG74eJRbFzRC2jckwO9ajRijUZlZP_ckvo1C34e-RuuSWU66UBp4Lx9g7S77NRO2hSHKaB4mAx3p9SoTfY3r_ELd8KmEzD7MhotDvRF1Q8p0jtbGxuocRmVI2yyE-l7CU7HAar0cE5aYTX00uPvratla_O2rzN_5gZT3CQ-Ewg5eEU1ZkqgXg4bb5FppzgFScd0W9tZ6Md_kpM56BY0P5ja6p72GiNXmeLel8hUzgg62QqZrGlJPVo2VFqRO10RUhh4pgIIAChA9K-1DfDaItF5fhETx9s9dwe0gGnWWK3A6c-0MVJa937UE4MfGn90Xdr6x6WmfMWQqpk9WukYzwRtv_I0KIcQ-eoNOL1ii701hMZVZcPhSNMyQLCu6fA4Ec7gOFq99iv5LL2Va82GmA-yvt40Cki951U4ooX9XVjg6YYtLd7tuAnVdUsQV2wkFgX8EmcVPUpzR-MdYMWN4HbkStrmO1AUk0AS1zZtdsFha1JvTSXMeKLdFqJyFrFhKQB_29lA8TFxPUAIhNHlvSSmcp__3S-2VRw6f3oGuENpC0Vcik_n5NHlXj76gTT7iCKnM5k7uosidxjs_6PXUgF1zHGwyHpNFWczGgVb7BaEMcuf2Vw5BuVZsayDeKv0WXFhuNX2soKLYkMnU1KlyEU4Bmt9hYxEYQ-U6ZXM9uGKCtw0yM3U5ut5_KKQhb7vey107IPKm--Aa4Xq6Nq34s4RdX1jdNqJNgw9l2UUAGUvFL5ZIDsgEpmOUQAlNJobzbZJMkCT1-6_kvwLChC1rHaUOtUF3Yzvnrm2wGkH1mLNDKyIIUJfkWqIgE6iq3TkJXKwPxA_iPCj2EFkUjdUHaKz4KfbNptquZpxVIKdYStWLBe_X0OuEH9V5cWhEnnJoK8LjPaG_UHwgoORqlIF_lnZsSy4GtTbnDBjB1nxseOaDBkagwVs7_AZW922NiNwNE3ZnbpmAhTsAPm4xo9tn4dhYe-sHhhhqGU8fjtb8cL-gjFRzr3cG4p-cVEyHn0qfH79MeiZqgYCuPSiUDysO9f0By3ZqO4yw5FdSRhrFWFJv6S0t9qx-4VRdhjShYrNCN-mTIVpVVuyk5HB_c2LOz5OLTzPzqSjAqC_kdOFHKGMQYI_OEQFc2yuTSNnfBYCQLOWGM8IjYd0mlWkpD-dJ3tnhRV_Nt_3UP9bCZb7c3e4GgN7SVoTaJXEcsWDnKm6-tq9sMxzhTORODGQS3j8fulOhMCgxyld8J-iHnQIvaKgjkzHqnOTFsIqzAuawDqWc-nPtUEW2bBE8sUYpJjBV0h7Lo3HPq38jbGMfPT3NSxEPmtpPVo7HOxEoRq9FMIXpUli-q3b-dW5eHxF94UTp4hTFf8eF5yUwxA2eD38SdlqII8eXfw-4rXXxS1kqY5LUPWF3tzxv5StmZfGjCC8qmYDNjjE1sewYJT_VZ2g-7RG-dw3dpEC3ufTguqykafr1zHxNCTem5GX2FgD0bptHxhUyZuw-FtGvZaMT4pwCQ1EBx6hhDmjN51pDQQD77eV2LQ5ega_pyXdkmxflj107QboRqrkhfQREA8PY25HkF5b0Y41YrNz-h_1vw-sWJfPD5G0wkdX7pYtwIn9JH1RqZqRKf8QuOylv-w93UIYlezCR3vrJC2Dzl1Y5xwE60ugN78QLleayV4oGS8QUyY9kEQ-kO09Xsv8e9ixZImU0D1nNFhL2o25x0oEBF97n_9mT8zZbgy1BTZGUzkxPWZeRRTBpx9S5arlSuw3fcDniuI74YLapIvdli5nMK3pxrMbdJVWz579gv38oWNkaGIQInz8dx9mX_9ShhYB_vxnkarGO4boY3qDAeT47SPcdERftcoCfpx8u_hN8IHiC29J0e6evpAOktOpMVPMhyQ-oR7BG2jwR2YsvKIFU8kEHWTL3Ph_NzZG6g5GQGFYcBBhmHF6F0D4095l1elSheuUaBgdi2F2PKC6Y-WB_IkKA8PRXuXJ2Fkixpb_14nZkgfwdx-bFs75dikG5kUgN9ngglmM0Yp9kXk9CwLTQP66ZnQ8Onh-vok8MW-y81jCQ7vToWlSajRFeftjVFYpzHRD4R8oyJC2jMB2bpPKK-_JetWPtA3RA2fLxwqw8hyAXmfMlZtBQrzyPbioytyQDfiKdOw7AvZAeEULPLMmI57_maZoBoglD6w2YK0hmO0o_ZVaesoSiZ5MV4iAfLA4KNRKjep9MAkAbkMtC-76Fnhe0e7QJDrrueW0CRdfkTYPCdUL3cLw2uaKqyj8KqsBc6gwtU5YHP3GzKIaeXfM5945inaao6ETw4PIZG4mHdEHyNDmV1TDSHP7FHj0P3a5jJOK1INnHQ9Nq9k6jWVhBoS-O0QCh1tXgCIuWm4_C5d-7OE5l-_qi_q9HkQkVlrZz44DbClQBQ20KlsHJfsh4qNgS4yERHFgkqAEbLs77FOlEUMheD2Pa3iojjeUU8ftKfYi5o0UF-kh1N5rKV5KCefjnEVTcfeyXwB0gMqEgJcTKxNjDxUL_ziukI7Md8TXu9h7p5kYlKozKG1zai9OvEjdZ0Y24IN2X5Sp526TB1vLxzcpVRhxt_BB-n6T0nZwC2nKL2QYXzn0NyouA0LYvPmb3WwdkJEJY1aJDSWWGeNU1_3a-Bvc9FUQ9EErGdJBkbeOMD9CcTJNrb2PepC5VGWDmCTvPYiRhCitQO3AX2HnjylcleOS4CCtbqcXzpyKR6kLY0fKk3hJfFRHoTFganHlnlfPKgBJmwtjFVJww57MMzhEzahMlnIrlFZIVoLjfrPMI-wj5Kq9BuNqn6rSY26phvdvNRkolYszdEfJTb_LJJCxmxdJbwT8-kWDXtoG0fk0afBk5-wGln6R1WdcDxNOzlmBpPDhYDhQlS7st1PpYu0WOC5KtrdyPsoaAnJeCOu1hFeRCI0OjuCkD4sBUkazUAmvJRE8SCHkNJeEZQX5Ia-8YHDVt4nixZphr0ARFNXt52h7Yqs1fEXNrFXJrF29KTwOhFsy0yR3_Moe0sK43AHRao6d_cCme3n0BlGWHZAlLhmUZ35_rv7FDccPw2T9pHCNjs_foJS5lEL5U_U9uG6ZtrZZMTRifhmJI992NtM4EOoGkOPqDs7bm4_96xOM4Gx26qx99qhqlqAG_qiHBs2fD9MDpJFUOICAqjjyXK-P8zhzrFxQabtBPD07XWHPG9LN3k7aeQSFxSEyvlwYgDSSZR300ycHhvA-e502f_-7J9M4pgkuPPrLwyajETDI6nc4_Wa-uzx2xmWbrVA959cp-Mwa4wMRfjALNIXmDRyuIhmhcvEnL-DXVdRwSHXy7Kbm_UGWHoBicQ8zHdavl_d4QroycrzHhp1C5Y4IhG-GIXMeXBdDN7_06S7mbdOrXx3_uZwLuAlsEmUi1Hi2AkKYUA_tFCMplIRMPLalnlwcDai3lJoMMPvTyDf48bOFPs-ryHsdAPim2G4QybzkBNuvkMM1ju8Mdka2_D1-gIY33kvLYCCuZH5A9CdUHlFtZTVAzJ5Zl-bhZr1qrRKv6l_-eTAbEnPvGi1A51YALadZzGqHWkwMhRCi0avfMCk57S1xg0gM8IAwtAdoU53Vg58t62dD96QY5IQtt5kYHCHMFpWNYpAPGG44q4IKTPxuCukWBGLXSeYCNFOArE-nKOdxqqWXWEE2DmbVWHGd4FYADcriVYY3Z5W5-crF27kRPTlVFgL_lXhXgwk6JggxIFopj6VkO4iS7z-heB47PYA8EKYRA6tXOPf4oZ_duUjemt6pfd9P3-6xJtnLjvMNplRoSd1c_2hnoN5QheB8MF98359ORLnPHA_t3-tu_E6v_C-pXJyK4l70I7vUrgEaAcXOGwrcuz1BhEpU37EepBpNlAU1MwdOHw7NEPIJGeaqFRi99YAEG4hqqzeUeZkqj1Ar_NFaA4XWMgTWVM450IwDovuokrOJ8tufbZD0J7uHbHSHlf8oetV38_OrCJduC4EU1krmJLI1Kmryp7ASEpaJ01znVma5bOPey6T9MY6QOlc2ND1tHQkYeII_mOxXzXksOG_qNqcLdsdpSgenDGRG59CfZ-mimic6Ti4gPVK7BxmwcN2h6F57ujsIUrgSV222F0_h4aJamSwISEEo2xSOgRxgDhkK_t20W13EeWgkPC-UeyFnNAiq2A4KcG6rkSyhQM-VDsgRRtM6GP3EtKw4CoR40mFy1SGEIaH5U1gTDfbFKPP8CHPLphyUvRIXymrCve2ioZuzZ8hxhyoffMenxIEk4zi2R8dknxpAOF5pwD94-HFEGjf7jWQez6DvGI2ZtvwWqbprAVEgd0oX0wzjOR-gXLtV6Ucox0BaPdJDpp7CnEK8j8HyhT6X88hqw0wSjaxDBDmfjTtLUQAUdwM3Wu65mkeq_8W3lFiXM-lYcvuxBoHdsswIQ6lagNCwHwJvo8njjdj29MhOqeflSQXTaqvmrvj_cMMwoK5EEFYbKhJIQIwolXenEXOlXoqEYAxGydvkhyWmA0on0WUROMBgOT8t63V3rz7lOkMQzBdcuENm2KYCCXo7slxwLQZBMwpd29UBimxiEWvrD_OGM_eedMZrG7G6ddfhPebRvv-uBMhOlKfoHmxlJOH4MB9Yh_zVbg4DiW5OHMwyCAA3j6snZ_Ih74QaL7R-5jOmNMjBPFM1IoJLnfxZ0HfxEOhC7uQ0DJ3GJhA3xkTBr4d2G6n2GDn1TiM8vjQu5Zdk6KmSxAtGnUNntj-bECwwR-88GixO1v2RjAJIKV5bGuLVdFZqgaSXHmUZjB_l12dUcaVjyzyDlO5ePffAxtAOYE7Pe-lPYbc_7xBCess6Eqn5Jx7nNxJn6zosLH1vDVb_izomTeXRfqYyxukr19T4jg3Uzj0tv62uUFYvey5AXU2stvfPYbbvao7xsdOuxp3AiKlOz-jhNp26NDF0TYjCWGmlxiFX2lpOWtjOhKVB7QkPugTL2KJ0lIoxxJ25Ay9o9-5JPFD_4DOBTlZ4Hb_sqdiap6WYN3nuCDIRHvkYo3S8NLS9g6iKRcve6WG3AD1Z-7nmjhFWbtcCkp-Bb77fDVaCzcmIKSeJWm-AJmeV6vciKof41KFKHfcyBuq6IwRHftSe8z8jDcj290J56C_sriHfntZ3HfcaxKDjzknAqKqvFnCfdpQnAv-a2MTZc5sf-9mpVweHCHWwUJPCcxPDILhs3y7J8hB5gAQuYpKH8_35ip8TE-aIAcmlJ1ba1bezAI33fY34qC--1nAFp4PY7zD6t3aa55kivkw5DFSWoSJ2XNP3KOWgOW-pCzu6QXWZzoO-1ZaA3NOU5NkN5Kq5B5rLIBhhRB5oiRqSx8Tl2zmZx_VI9fqmJ4_HxTgzjeUgyxH4qa-V4Ta2px-uMtooSCayVIebFOiwb3CxiheOnbkMDEmFMCWUg8JAvpZTzh38dgJiOiPAYq90j14xiIC7gD5gjhxHMSD_mrNL5LN7BOKH2W7xN9d4cjMbvC7zUm5ifrrwvxqSzAwqfwOVLw8lXS-gTZT9QMqimJXXzCo8uly-Sz1FevKqcIhypfZIwhCNp7IKQny65utyGKW3y6-8SSvQmCcfrsecqVtjXBpGUO5yQlom88ghQ0FndbHdRbs9zf168KW3G2pMN1V4R4sHX-0tmUWl-JPY91vaYaGpk8O2ZcPI1fL-i41iKBN7owW__x4wIbf9hrVWIjdHMDyUzJumZsrIEECSmak2rJhDsOsWKheSx7c_thX7no0NMEo2tSldaDjnIAz6TceEHpzBpzCG0q6nsHG0zrIHpXCxam9JQMLI8BIc1QbRXYw08MfFyKq9BWrmf-t0S5Qd1y2mTJTN3UvTSqlEyD8RlfdOnz5EfapP1em0YxIVfnW-pF1fgiJNfrfOr5Ifx57fMI7OFymNd52tafvGPo2kGXN5V15xK77aMdhp4r0mkQdwwApogusQ07hQFzNlqTb00SjaTj9ch0uje_dAf2MK8Q6GI9Ejbd3sA9_xbdP-coqjTwuYWWE5Lc6GGGm5ec6OweSw4ANVFFXEzglHj4-coRhn09TszXXfk5JdYpQ8npwOWd_oIJ2Gt7zIS2J72i--dXMWwtZ56TPgv7BgaAbBxIcbl8uoX4GnXQnEZolJAlsbO9Up6DMgLS08zpYnF4KUuHORvbxr05gD2ZPlx3vwHEyHsC3fSdlAHvX-MPWwGbtHXKioOJr7NkfxLs9gzjMXxuGJudm3z41iO_P_7HSJkQryDNRpCLLaZXaiMLcHwqNaWP3YDbvV_mtfW_rPpmKYNj4E6AuviGAIEn8vKanhd1_t9NYBMuTODMnGmXWFpJPBsS9RAHkY9tveZwSQ1mtujQEPHWc19QLq_vEOvWL2O7Teu_pdcV1P0yoNKJk4HcztpSUEgxwI3qySc4FpSVz_lvPxIQ-5fO2GekHtDBg4ztx3MoFYRslpBTPrTgLDpETp6rEfqf5YyegcFjj8Xq_in_jX9xVKrPDoyMz95MKaiL6q_aOFqUDdP6f7YD4TPI75A0N9vwZbS2f14FIdrSEYXHrzM_d9AWlDxjP5HbEQ1_bNC3Gx9ihBANUQciVe0j0t1AgNyvqCv1vHGUXsBAb7x5MpANHWENjUmmnwDk5Drg-qUh_I9SUv803O3THnWGTZJjl6q5Ly4Z9a1xT-TfT-TX3U5g9dXTku59aKupsA8t4hLIYj1BHQt_omNTZ63h_E3snd1AqSzcMfweFSPTZxJP-K-w_4uSescC2wA6JJZWxb-VP4l1PqPEzUcc532MFMaGDwi0yU-IS-Jkc2gmGJKlls_Vk7-zFACq8ukSAkITJmuAPbCtl_pgUY2QsTO4CrTYTAoyAehdvaOrxe1topDmfSe7CLmJ0urvK-5IDeWZaGcfYWbRHixE7hi8tdSB7P9WeNDUIMBcPo5IVYax1iypGfvVfNSkyAI277ee1ChuorNRJPWQcESlKa8qbg0hIYAtR0n04GtK7OEZ1XHnczbeLqzRcV2zbcyc1vhW03BQl1U4sHv9FXtNAaLCIWeIEyfoVuJ2UOKAI7DIbQhJrrrk6syvjh6ltaIvfHTMRHcjeZhL_1nUZlYL5PsbhzpmPUCzQh4Z3k-oUpiT4IAL4LuOMWVV-_KJp2oxCHHUHLAhDyDL5nms7tXRBBj1YnznsBzGLlgwgK9AkR4tv3wEmxfBbCJxQOfQLWHYbqGeelQ0gb3ibD-JVXWdlDgBxAbGud-jTELV3R-5pgnhi057iYK1jKgUU1wpqRjUvKcda3ZQMBSnOX9YjU85bBQIsPGYc16O9gm3QWVGT5qvkzF3hQabvJWcSJEHzYiA4hnUuA8iPlDdg4pb8zsAcVvnj29R-vxqQm0ZIr5Zv9lFdatC_F7HfnZM1giv8-6imygaqw4EM28pZiQvumCoe8GKbyCVXJ00LkyEEWPVLtX9opxHJbptcwhUycQEinHE4KoqhT2kLrkxnHnuqeuCG3I2Y6yxiIls7DMm93fMlwCWIesE8p04eL3ZnPXcS_2LMq1Xw7u8_K1ywx1qyPpFVn2gBybbOu1tK4OfQJeBIoSZHk9vZ--QfQnB1RDiirBlASOyACeyjCS0aOYq7cluYbExpg6GB7r6O5snsDLQzVognX0SgP0lGCcUfgFpOZ5I3c9HjRU59Sns-OXGU3wQI6niIAL_zr5ZpqTLgA6CTSHbIn2Qtm52FakQtJB3bSbfHOJpavvURLqfH6obuKhDlg09oiI24xc1zyJvMpLgmQIGTkzESNc6BpzXOOEVl6dxSYbDibfyEj4V45y3Xu_Q4cLbq3eF5hezmi_waVpqMGjLozAvhORGre_GGaX7J7nNyZo93Uxt4H-toovtO0ZQW8nNUk60hadH0uKe9c_7HGMtzc51akZGUWdKb2HTYLQLgzfS8dkI2yAjsko9lbgKxAWDmkE9xGTu6aT3o_Dc7MoOpKvjDrJA_5OivtlpcqOyJDJTrnGwx9N-eYdflNJGEqQ0ybol4SMnh_nQXCpx9v-lxiWL34_BSpqhW7unXLskYPKFPkp6JFQfalb3ynqG9WrTIpCun6_wTnkXk2nCe88OueM8u9UyNnuzz9U8jR0ZURMwSSGIwvnKny5J8jZXZans18KJEAZIOoY5CrgUquf9hNUJZtopWSjJtHAMQzsShSaUhkV38us-JXj_-PTGgyq_w0QT70RLgeFMIbIQ-NH1cdPYKVKE6eqj7fE-xEtPCtMBeVxW9XIlpppVPp25oqrGK3gxWYP7M3xtIPNxx3Na04yUvzEQzC0OjUB2lyAIfOx3HCIIOgkckY_1BV033090fZvAJS3Ay7biXkZhq-RZGg0wphNWwxFir7PsRa5j2OaZ5kw51nhftjUHkbZNGiMJnjJ1DjpPba_cWqVYJOl1zFtSFEGuHHZpSZ9fRzS8op4aNGIwBCmdt043PwUjO1temNtAI9YeDqnLrfjuuCbRRDW1l9_-IHRpceQ4it5aEm_TX6oL40Zs1KIE-0LtJ2Pkeld22qR4TcPYdSTfRtP2Mf9_cRMIbtg9qRd6gcmZRIfTcnnsZA7Cnwv1A13T-VsxwGQsJANpD25NvbioOCIOT-PaPRV0p105lbZWjozetMVK2CgeF3M2eDizbnV1iEmnRmiM_RMn6Hnie8MthrqMLD5gueNdnabqHdVf21ipXx9uAOmMc-gL2yZ6-2_54j-_2D_qzgLqNffRnIxwaLpy31nkJ_If6jwfoCfmG1KGVi51XQW5psv-ih8II9RZYyh7EtBhEgD0ztkvA_j6YVVjjvCDnIS7uHIv_Nr8rTZuynZXONUyR5j_Xk5OfyIk_aEkcHlNsOvHMoiIliEAIo-oVWQkMoRZupLIreeKSUWOUgmEF96_YeCRt-LCWDQTD90Ej3_mJZzjTgaU9BwUPcIPTPRLEdq5ZYewc6UsxrpP7mM7Tx3ZS6r0ENX3NJYl1BUsP1zEmGY2ggLQ49yVho3C-WuNrG6Nv8bwpANvTipKZMgumeThOIdPXaEWnnOZDjPq1DqfGTHIlu3Di5-n1UMx7xknLLfWzt8C6HUnbmFRTKvF__IWOSd49d0l-HY4hu8SUKZzgf9I79t8cD36ZsnzGDzhfiyjIBDMBiFzgaxQ0Z0hSccIIyjH5r8Y3Z-JF_6W8mIb5KNo0aKANq07UewITFhKHZ_TxziDwYJdSUMiigYKuLGtLvJQ2efIYlh7ZV8tRMh8FhIPwLm5l-vlgVG5SqVDYBe33jH57wC00ayVT0cvUjT4KFCRsQFQ0A5DfJj25e15dq_xJm_ErRfE7TDCfOnX_IEAGHR-87UyjZ9XzIKY62XZJfbSBJgBEu-XSph6tGw0H6GAME8AUMqDNTTyiHXFhMrHpQT8VeKFo4ZUKmovJ-jmXIYr9RX5AcVKY7iO0Oe9yaIeVPyegn64IP8hOafnbJw8UVO1n94cY0ICLsR20SUIKQwb7edmfB36XJRKFybH1wWtYEYbd2eJINMhI7avPwfnVLbwBdFY-AJsBjM2FclfZmw6q7unXa2iqgEcQNnh_BrOlLLu2S-sGpI8D4TUFPOr3hmEo7x3MWq9xQ0fwJVSX6tVy-nxw9at0FpltlJ1U9jma8pMMojPnTJhQg6xCYWyvGMYG1sWZ24Wu4Nu0y3E8aeG0sggi6MzaCcDRTWZuEUQwkotKSLQN-11SL7DAFrc7uy-ogl7wIenvGfNg1zkiAJ3JC5I6yEAZYxJ6cOAeuWDGWWdSmCsQS-q2mySSYbOf5Q-p0XzicfvBZRSxC0jelD9UluEg6hCj2fWdQPe0B6wWt4LEdTS1xhAJzlUXQTp1dGhyhyhhRQ2QZ_-mw-hKZrpbfVnjgP35sbcbROl0nfDkgfzCLbXVnDViTOSCZj0fsxf5sOJ9zmqL4-OX19bVEheUokrg1jWTAqhnRGEKTRt3dA43joZSqBY2EQ8f5wMEAL454xPJ_KjvOKj9sKppYBInicEw_iyt7qWEtN5uneX9aCFKyf4FutERB_vVo3nP5W9FYzkJQwZI9WZOK-cG4STp88beF0li3_-rFh9nmRsROVoDnpbhc52G5NZ3Qwb-IMxQl6HJ0tg4qL50Wds-eVMrh1KnkVCKt7-JmxLvWy5xU-R7IpFY7KxChXAd6ep7n2MLGy3NT4R-O3A5zKLYzH-1gTbERZxI-T5Tv_G2QzeHqBcmfXgqPfm5XnAXIa7f8xVFprirjIn6sShJF1_I9--Nj9Z-Y2D3o55SiFkQfALNCRK-k1vqUb5IO4FA-Obvzu4tKnYQIhIbFKXfNeFKuqpDnPp89mEzOHTqKwwiLPm9VOpVVjzny8iTyrEs2xVXnYRWQRZL_FZcloPa3qQIg2uHXLl4dnK4-Sbz6LnO0N-0HY4HvfzHuJH3ORdoOccroU9Sj2CIwiTC20g2ymb9ae2slBbg_Gu2-osyuISUFIVyKIo31khCIIkCDR3DEUhxORXvZPU31xDAZK0fKBC1cruZ5jfHkPzP_BZWgKXV94U4gUetv6jW6S3PFyK5OmohVmmFYhLsPiqeeexYEoss2nGA_tnh0R6dS1XUqp_ySB47q1V93Zqtc-X76ZidYlisrqGE47J_67e1IPwO0nnwJS9u-FCRt5zxX6iguhgmQltkVtEjYUGpK-sHEtjaHaEZd_G6p1ZHxhEmFz9onrkcMZBPm-p8ao4PTRXIQMCp3G88qQmcIhQDf9k7abHMJtyNo3qRsQth_sTTpioMuDfZPns4Zv58v7_BBUq0SLvJFJHNWwKtBYhTatkbyGFW-ypvttkXb6X8gN9Th-LNXj_A0AukMXZMMyIdKGOavU5goGciT2TsMgHxsKc7fAJDpA6Mkyjpe97NKVFEb1x5lOBYOcEuUL2U_pt_0vX-122H9C8HD-nJmjl4rU87pewngPD494LC9dDyfIUjbRIxd68T7mZrRm16zOK1T9nPWq8PpI615dh7s8m3VBj6Q1ATLM7BJd_q1a0s6ZV1KzQdB8oGkmg-iSV8VzpdoC1dKZ1NVmfAFBdjhEQTMOGH2X8NwshrOStEESp_6AoLbNP0i9R5c7s3Rzgd0aeW3NXEOPgGVf6uQ4rDuPFJhkmFea0pSnizcOKMFuyzSbE-dnQwxw6QWxQ9rVbundUgntGvWtWdqFH_AuIumlLPU2hrR0xAVPDqZ7c9EORfcqwUgzAam7M3juTVZzoP2Ndr22WY8a0tjyu18-6EWnEZW6FoUo3N3eM6sCGxnhO_WAP4j_B3k66yd7x0Tn-dOE_Q6XN7i4r281lVHvC6Qt0ZBjS7VWSL90ETVners8L_opNC0a7Ca07pMEz9mVeyOVFh94oTOCb6hQRa-oBhl2rCgY343vpx2opstMxc5ngVPdlM3ZhsQoaOXpf6eUk9dEr1W2FiqMiTImdQXtXZ03z5ji9OPeeZvAZCL_XVLgW-6lPBAe3UCLlAqJRFYNdGsYMKVRixP7cJY0R_uypaOMxWzubeAhrBfjhRXnjf--2I3_l55EjDa70qc7xyeoAWhzfIYvax0S6BwxJaZyRMgOF2GrZ1CwyGF5t5iSyHYGfVcQeDbJa_H_sdTAic2DkxpWk3Kw9HAb4M2lPi5Herh_p3np8qTFUzJo11kxg9bRyHC_oWbi_RC-3yqb3NaAleNHTaF886SWGABj24KBXyaCutlejDLpDkJivSfBbWxBZLgvsKvnDnKxWcBjGMr6FLW1jvL3WDCv_Zh3z1iWmUBGgP8vhJulNKPbZEM6z4ommV23Qqk-TaxRM_Ii5x6GHV3CGAd3EU-6H02Pb92Xod24uE0zZI52GLEmaunRl_6J8FYwrH8vPt7IJ3J0RDzgYFXCDRjchThc3gKG8PIEBd2IZ8Z4Bn4BirZcLelMYnbjq09EQSoGcCTQg7LGq8pJmLy5sjr2Qkxgv1UCzAtaY-OXd_gDZsjl-z1lXSSJZdr_c4SCou1Dc6-9wD468wa8znBWr-rDfXYbr4l9UmpFkJIxob91Fbsw3UJIEihaX5d26WEFZE94YcAc5PcAcO0HbKBZk6tJxG8dqzYuRrbHhjmEzpGJ_kOW76M8xzi2CyQiVXxpmnXpVGC9jA_Ajztcpb-V7u7qTsH-eLotpcHrSXalnGzPGMjUBvNwO_llVMhX2nekx0EBql5KBtZsyA_cuUQgLi_lPNbDmwffLDKVss6c6ifcu8JLxHdzonNUfuYZ7hedOt9FyS08-c00-4u6TSQ380Jk0zG6bMwLDE4EjEwOBTPpCo3XU9GwRfh4NpORBqFv_DUIWLTfKgoAfh1vh0kFMyXhraF85cqdGd0NDUJrO3r6OsDQ3ihYoJ-cNa7zx_zrKsgk48RchaUU5PHIY-95Xd7QNOqZVWJ9iKNFcrVrImerPmAqUijpzSrj6HQXRe_weDy2rE_g7UEh_Hi0k5j3NKaskn69CMHBtWw1PFKOB1HNh9DuTckYd6g9WFkDhf_D8K47zH_1tD1k-cxMDGwPP5O999ecOPFgWG9T1jRi3tvSeXewMCd41Cf3UCD5JP41uNf1Mx2UKf1mnNrkBrFQtg2shYFkvWchUznMStPUO0o-jRTXH9I8vDY_y11upNvl72YVTzjb1FaMXDIHx3H8KDjcVJk1zdcUzo_5Jo7K1pN66Oq3OTnOaOn57KtuXlQOHCOYlrwB21Gm1xnq1xrHldLkhb3wlGLb-q4T1lKEo_f_o-sSl_ljEGgUWN8xZ4ojm2_DS8h-6wok1_JPtq0VcpGh1DPOTTah4QinmzyOoTPIZLUqbRN1DtBxWExyFXCQs2ffoo9meWrwFcJaVMuRRkr_Z5VOHUFa5OT8CG6SHGxcDVZkBRu29QIPcJ2BsSZg7Ei06AVEs846tyMkgYI_pekXLA2qIJHysv00W1RxnbOEo929Q1Qwe3gyFKzH8MWn0r_iJpwZDpiS3OdIzeIXJboAAfxht-iLrK1lu7HYw337ilRBQbDRRx1SKtsrWoG02_quv8EenLKsB9D1aauGaF1oGpl4ZxIMQvOMIn2uAkXil63xMefzDaAGYsOOYWiBeoM9IxjMll2CoHvwHOUpLwVw1PxCZ3Lyj31Y4zoJZk953WkybZh-so21keVZNBlHlScGwIYA6smlFFU9LfqFaK3IFv7HIcHQ_a5NMoj1PzL2mJ956tc4tGY3lsxv5M4_Vt9A42DLIJvk2QAa6YWiQLjEMfaVZqyXjwZ4kBBSJUNEzuQ_EZxnHfwXgEBao8zYZqwbah8xlf8-Fqeo7nZisd_Sq71eMV8tzH2fJWLv5X8S7LlFf52zVYNqR-S-wfPpyHgR3uGwk6EJ6bDOlNXCQaqLNQ19oskxMth6o_D8qIUW1ILTWoy3IPA1BLPQ-qQmQHOUNogh6d08VdsKDGU9yLq7WC4ws5WO3SI68ReClDgoS9IcsEsUDNpoh_VbLs-x2zMx2MqvNxojRQD4ODt-Xmn6iorKJUwsurISHtn3s9ZMK5GoIzXsvMnf17C1amjWaZfanyyTMzYhKrFfZWZRN6YpFq-ulZ3olrVHFP8Vu8d2d8I-DxjaZEAUlJ5t2pvISVxmJOUoG_86KmZxsTMWzmWCZENyP7t49nXfvKLTaMXrch5BEluivc12--zSFqFlSEqET7K0EdzlYvb4n2aNTg6UamqVSR6uKIuX7tlg5buOi3_Tr3MQMzMAms44mebikurDEsVuLRvnEyRl4YleNR1etPd8ojTaQeexaFqrhhWETCkLLOJSmov3K3yUbAgztns6hyll1E3p5pMDHBxczo_udgBp7V5ZlDXMDegpkYevgjYBR7TqVxeoexug72cVVl3eXjvv0xuZq-xn9giUzRT-tGhXBXqbyswXSNfdfhPT6Ed3Zc7DtT9BQKJbk4LTO6jAQZvaB4SThPDIEcbqnmScXbjyY5pG-haGsKoMdwOAAOUadC7noSZXo8kmBCfKCx35aRhoy85rkUQ2jCQxC8KG6Xr2S9dLDJe7QRhsbW88CPtyYcQ_JjDUuCHyPi6Z3jgGdGUC2E-bkRfOwlJB56NX5P71l-sDAqK-CbGd6VokI4dZotoqbjtfDMiAI86vFuUd5DO262zKtMN3O534eXeecfcx-ikEJFOPUNSXY5qGBwqRzOYFW9Rk6ze0QTCaIrLkSNKMJKx2mtnlmieHfVuG5_XXZuNGjuAO1gFdw0wZumRDOTHcr1VcWjJuTgNm_oUQCJAnlJH5ybsR-SN_l-Q8C9A9A9sGyP8GQ7a_MzqRY2-tuH8xr3gVvOtoGzN71qXMM8etBBieObMx286dmCMpoBXwbjfaFnrgZcOaCnq_3N4dBUoy0pFpxMScUtnDokexOCua1qfIlSV2oX4D1XL-7CAP2Jv_f96oLFbrIIgEtw63ZTmguFh0G0J0aa180S3SgcFasASbWG5Bh2zNOtQmGZcngJyqn0dHc5_1w23MKAHK0shLGXl3lOb9Hj_3Sx0noaiEXm_ywB9huxfobdg73b06_rd8SIXMe44F3yNBdRJ3pmL9gpaLggVOHlUiB6LCZLQ1GqfK3VnlWiRcDfqvoEydHFvE_TGikstTQ7VfH2Im6RHzaGkeQDDyRGB1xsiFiyId2dwCeWhDnzvrBnFnMPlDt7BamIjrw8tPV2sqNg4Y7meuHa00CcwBU6T0NPEg_Rk-YUBslu_DLKZ2ZfJ5hrFa0IXSe9mbBfuUkrd4KPU_tqaTwmH1R3SODvSs7NNj2TKnJ8paVqnJsMCK7y-ORQLRlw_tgiDSEvy7HJUJWH6vp6uYN3deBHk_J2k5PRVSJbgLXVpL2ntfaCl819H5lq4UZR0tcDZA42EEpCuQpoKwXi8ceMvKv64rT-OYMjtEnQwL3h9e51AKZeg7ADBeojbanX7wkg2hcZO7LmJUHSxlhhESmFrKlPK9OaiJM7fXHry5d2FVtbtIrdsJay_o-JFsCi8HMFPBp1FUtgpirLNjrFwmCO3JW9AXXJ-Rc3VGD5IwZk997iFVokPUfT501HgAU5jy4sK_ozSip5N4RVh9Y6dxHZAqyHW2fZhptZKk00GtL05vZsBRqFf9WPpcXkqKyovKDfOHbwDyUY74A2WrOpWmrq1LmcuVkcSNiDJHCbz72zNxlrGjUTwxDdDWAC0NWY_-mdY-5bnz-m59EewFheRifrQzzxGWZUgHzR4i0nFjMP5UZHeK-1s0eOcT7cEWwHad9HRLMkPFJt8m2d88wMU0OqvGwyROtFMyYqm7NT-8xPF6B03FbaqO31CrwRM8wm3j2TC3747UhHaMgeUSxGttZZWKZY0FTqoTR2qDJtubT2tSumgNw5CAGjtyj4Fr7G9tLQ5t49vdHjMzP9_zGVvBrmTMImGZtKGXUft_omVHMuPMAN_SrzHtHv6pye1iTS89AfiaH5oC2BV89WLOwamodsZMUgfpn9TW9s5X3HuM1ZG818aOYPYEjt7zbOHfsJRX0VPMOliGKMdOF0kuuFjjZoQ2ipvueLIuhyRvfCganH2SIGo_RJFeMopBniJbCkDanlUwo8zC3creCoG_sl45vy2KRKQyyLRWGAW0_K1PNlGyc8rYAx3rNehAtOoGOf9fGgLHSpx-I2hhUUCaxe9DHICbwAx3p4iqlvMc0XJ1b3IpgO-IWlvg2VpOBS1EI4-vozwpzwjLMIRDudKUW25c0bCtM2Yui12fKE9SAiVE87hNOvDkERgHefzb46O0chRMhmX3L19DJJb-dMNkZuQe2NdkCaoTAUpHm2ZLiXfq4j0DZm98kc3Qq7TD7EzZXK4fGc1iiMyJa8OntBSv4cPnoYEczyS2RevNgtZuW4145zZshrL7G7NpfP9WiXQkVfMIdadkRnJqK055_ttdacWJlczwe-ZikB9zjBFRiGQO7v5_U_hYJIjLdz8oM9jiDmoAjd43bH5FeoSVqVlYUdo_FE90r6SMs8l6CfY6B72OsQ7KNbIqsH_VkVgTBgHKF9fEtnQXZSN8w2CV2PgbDuOYXIcm6A1Uezq8feZvp1lBqcKd0XcOKjRu6HPcuu_t4--bCwBB_P4Rt-J0LvZ6Dqder7mvEee_wXfwG9Uc1ZRo8JgJlHbZY4ATz3B4YVQkGmLc7OvzYK9FuEmHYPn2NII94tFYDqMzC-YuyNayTGk85Aq8tTffTvtSae16z_mSlwX8U679A7Axn_9il_UiAdKeXX83D-eurykxoiPLN8YnFNPgz-OQybVove8-2ffIIeFApTbE2yxIMSCx_aMt7l06KloDtISTSDaWhA1mGOdUM2u3kH95im0kzLAposNcf-24RX0eeGdGG6Wp0J85eP2QZTs_LtGvmd7mV_jojL-c0HfXlG6A-MGTSWjPeMD_HNLdvuOkafKteWXnrLBN7cakqgS-gIwCDFFApX-Mt1ct6P2oW66bcLMgI9wkEJKsLDHpDCnYqb48FaZSlFvrQc4yi2RcIB2JrqHHf2_F6g5yI8E1jO5nhZYEhqq_PQ5Hri3R3GosACgDFJJSOa0TwhRJryoIGyq0YrcteWivhRXvvv0BsLoNExExVwvEGx2SancbR_e9wiU5IxEPy4APADwWWKxC6q2XfPC1HRntljdoFmchweYe7zZYB6I9P191GMWMYA65YQR3O-HERaM4cxgwoUGnwpg-4_PyZikC2aY7OXc5-myPnEqNdXj20AFoRHOsZPtXsGDN4oaq07CLVlVgOzaGhBKcfkChg19dGZv2WCSvaGVqbFR542rtpBw4jpLCg82_Xk7ZYXoj5PRoX2OV6dXCXV8Vo9nyl02rgtFPCL0Rlhux3ImKop7kJ7mBnAoYrKuUl-a38e_CeWQ80n75DTlgyO3rGSBL4DS7r5jrfd8dYtPPeoKrnaOq37TNXREjagL3C67jlTF5qRKJnFMzBshFheu2WVoQGiFJtXtWctsEMuUV6arzhnQ3EWnWYhEpUHA2qlmvQp5IxtHZWu8rB9Dx1Sk61iJHAUBLXhlfvPb4uPJkOnXXp2G-2gH6e1cuLnGdstHM-6tupyNSX9-h6qQFGIDLHWmiS5yDyv5UJeQYyrg06G6resBBV_NNl2UuqGsRi2ajRiu1b6cJ45f7oGVgchoStCq5QSoH5JtZQSitsJQnirDOoIdy-ZawpKWftLSNwR8lmYqH8i4CM_5TeC_C-0_i1YH1pNHGL5zPtEWMn_zz8RA3xECADFwsdxE3coxUN5s5tMKo5lx-1ic1g4wwE6hQkpiHgNxoOxEsH5EoSokHCM53cVQ5K3nWVWZhGYcnKXscf3fW4QlMoc8CSuz81moF1LarLf1STaKqW40wFLAbL5LjOAtJ3mu0uinOUXo_JPpY2puwyRu-Q2vJ_f_K5L66HFP7EPAMxjXFpIEeBeDPJmxAiWh_HJB2vrFG578wtNpPfecKB7V1ar6hIW8Y4V8mPgfTT86Ao86NhhM0EMOGQVyka81l_JcJ72xAwnPJnJa3svh_xZVGRc9pA1GHqRceO9C3_unQXaLG1tvi6QHyV0sj3pe6gR0DUjs4orlmDM5Cgb5rJsdwkdBLVcOTSnCiDPIAfJV9oP1FATfb1APn4-zryj_2hEMj3QdUcNbmmRapc2Q8hqiPYFl7pKH3NLk2PDk3UB8dOxv1vbe0Ywn3oBJjL96iZxhPhxO2nd-bImEqQyx3DTUJV8g9Xdup6wm7axNY2lXouegl9ZpwpCYI6f8_c5xnlJmVHrBvGxmJ6GGp4chO4FdMvggzDHS_n6hPj-WrCPvGr-h76PxsZHK_pncgt7-ZqNIBPCx1VZrPKbYPtu5sixiUhwWT6SzRlNVXGEX5IPtaoT_nK2SrE1t9mB-5un3Um8Xt05A8VH39a-3TwauKTD-0OKC0T0QpT3rw9jtzD376Txpy9WZdC98TdPXYfneB7z3FIrmqFnz9oGuOyH6qMnFfqsXnUDqKV3KFBWbP2dX894TNVHKuEgPMnM6blhj9lpq0ghsRTHvzVCPO81P33_KcBUCR_P7qv11yyhEnP08klQ-sQEF3XaMS-A6Tnj1TtmrPm25OSqYJJg87K54Fgi7OuCZRlOEsgrDrF2xTjT106HZcNOnsspKAke3YVsCvKVLf_wsCk466pNOycbwWDlA4Nsms-UFsnWi6pdppmmLOPpGeOEdDZ5CCRSxFPelMAzOWHvVCVFHKB4tnzvNAwhgNNNAeeFMUnzUYkotIgCXs2KjFW6YP_mDC-mbEAFVAcMDtDcfE5n5heq6vXfwuGJo9RfMBCGbe6MLurNsp0IFIDp93XCCPI-jH1yBjfMW80FRqanVwoXN4DKm91YfViETuUsIOP_U2GkIZSttAwF5Rr1UEEfhTr6aEOQjjyRQ3-BRDF7trNg7n01ehvzRBBlQfZ1y-r2JePwnR6An2Dsbi0HpqytUFSaBIme2ekijeFm4bhRHQm6H7ZV9SNf-4TPOIBIwQCyD2_BcVwMCJDOUrq8eLZSWyZ5HyQpxhfqFNE8l4-HzbfdF2QdX6bysc0dKv5fVW8hE6ScPkWLqldw90_7_7ZuFN2KZsH1cgfCDY6t2Fq97gknWyx-_arGQstfOoEF2UYnxiLLOQdzE8Bojz_mT_RoI6QBZIIXJypJcszobREorGhj6GgpPRIInem3DP1HS7jNyc_rzvLoD5LrLnc3d6qkt0w3bFVfsXjx6my3NByfYPxYdsfSGw5z45MkfjglIz80b8ZwsWypO7DQ_mCiu6z1GgGw6isZ1q9le9U5XEYPxlPF3LhxuacGC2eLEMXLqHO7zvkozqn-K37JF0RDSsMGOawDqfjf1-U44Ix2dND51lTuw8MVPEVRTvTRcnY0kJk02NiX49vqDFjtf1BJwhIWYTeNuIv2Hx1sAG2Upu_pQj06vOw-OBxouSP3ygpO9J9obNhKRIPUJ_GbhGma2-reJfCW66azunyth5Walo78KYWPj18o6TSOlbo8GqOmBSEi4qC7Bh5mSIn4Ra0eiO1pp7wh3InQxwlt6Prq8fKCQpqBKkELmljqXKIk182hwgTgKxChGfnTTbAAT14WW7wKMvUGB5ygtDBXZCq-4rnQ7-slXe5L8DZEYq9g5ByzYMuDN2cZYqOGvAehNnbf9MdiBmZuNp7RQCkOlu0NKaiL6mf4m0RJHY9ht3MaVipikkk5TqUEiy71wX8aoW-Nj72J94Qv7TMqYKTE1rDXby6vQjn921SlBGC1o0q7Ci1Jjis_u3kZlmezwqV1jJ0BKS62ApMU155JTb5iCym4-dzrMVREmKCgkUoy3c6B9URljtTnYhFi82e6QR3K96R8P-G_xRgKzRuew2VLcWJSZmFeaRmrt-ujaT7Hvwt_b-OvW6Gv36dx9lCEGM-6qYiYLAldi8UNhfOls8gl04NaxOq97_F786Qtj6s7mzoRnI5bbqtWYoiDrZDcv4x1owsNbf8Gt5SqugVu2rzHNeCsBXhon-j-9PP8Lgz1vbOBewX3zLP9QT-Y3f8eRRT-HAo_56x-nFuYpKAELVtfeELIHaGH1Vhm9Eg3efeNSZucawS2En7eqk_fjtQOvyyTLmdQO0HLRIchwvKSnAENQaf8Y2gPOZLpcsVmkRbYWuU3XV94FS3PVeDbzpWomHHlqEAxz9EO8gxl-gH2_P2bgc3MMMcBtCS9TEfOiTZ7ayB4HAkIojmlThpw04v27oAknWRV_cp0y35SoguaNfYknKdyGyaPb5AIjr1cQ5ujeCmk4aEw14p0idi6se19Wz9Hx2RFGPfmEFcwBhS-wmHEFMqx2jkkJMzHYINoFENi_iq90jjLmcUO5ewccUc_GbknQL-z5DjRmBVdgiMSIB4Tk48oKjstDkXCpIalKp_2hEwxbvOFmQ83e4StpTcRgmBdiZ-rMsF4MDMsTj3_-f4L1CYrMnIQTE_qVAvs76QlnqtltqmcVyuubZxkjRCMcPWwYGetmQvcteI40WMrYl_ppg846wR2yQOHjcCZ-IQCWI-_6GAzuPKrCNKSWx_l7LELvWeUXwvZlUftrKo8rcCvH7qXgazx87BfRBrdwFz3vHj1uYFF9H-bC8GFvZQxaZHZ78y7yfdWfzkQdUgc2fUDqrS9yiP8hgOnAoQk5cWULtCGYNVpmeHX9jlF5GbVc5DDCFJ0P5xqalpLgQB4rsNsb_k4k7uXE99UBS7CnQxuVIzK4qECULP0ykcc8wxqsGf6ZwvuF_PSo1xxpA8mEt6hX3Ssy5cVsnHZKnNJnBC8kcfhOMpPF3P5FFpGVDLQxCOafzdITLluFuIZftSxtkrF_WXP4ZdxNirmzzbb8z9lBzw4DeZ-OE3gyVqeWwbdcEFkQjNpg2sq-mhhlMvZKpxKzs34GcWXN1D3_pv5371-YtSjwfovXBqiOFoVVrlweVimbzukDpGhJ3w5GWfeMYTLze7dL2zkmL6n6GGHSJD7-iivyuh09VxkUvNSAj_wRDCK8EHMeaPKGOutydYglQp0DCsfcvqYo66YaPdyATohVcNER7Tu9HrgC__GLR-qQokEeudYRC1YqgU0E87A2r_GZBQLSyZa7ohR3xS2qhi3yYahNjAu6BPYMNQ5xdjLTHe5nre8QWSMRuuCVaBvf8-HK3QEH8Avt6X7Y1Wu7tw7lHc9Oj8E1PeKBqr0Li6kobFimELoS5dSg28qvJm3bsb7XVbUbBPYRGy8cQ3mwon9nl4bouHNbUMBfb6EriLfmkpkQ1G5skQRPTTyLRfRTnF_ngkauoMwamYrK8TUex1YEwXjyjxlTAMPmy83FHqo6_PY49drQ5Xo-cwl7BcJX6cCXYcS72BEWrdJau9G3QHyFHIPe78aWzVEeYaV5b2E4qPgi5jYkL96ecMwR_jNPTgA979g0H7BtDCnv2xGZ6P7FCtyDs8xc2mwrf8NVWNlacuL3cuqupdVktjJRFu7GWeQ3wJk7FVlpcII5Q_PxMEtXbGd1keYBCYFEBteU2FZoRfQNBorFbpHYTKbgPAJtjdxJ7Qogvg2hss0e34cVinPpHXYF5hn97V78m_Fwn_xK9tftYUUPczhssrSlQL25yg3oadeaJfSNKWApsc7I_P1vMn6vLN_1LF7QXudFXtXPYYx_VehPSt2vekw2GdIAwhc0ojgriqksAQ-pO4-3KeB1b2VGcRbRq9huITE4bibz3MaGFRubdkYNvWtsSI0SBlvGdM_KtnjbfO-4bAtUW9VhZnnquNGhtc-TQetkOYg-jTbo_64qw21ptQEnWrtg9euMSb7_SpVbDx5tDC9ilB4q6ee4jvhx8qQ_cSBFc_r9Zvdjb_8952A6dgiYzG4xgdlZk-jqpHRG9JMKrReK_5V4hlGvpWNzD4gkDNuetDPQlRz1pplZceCca_OkFzK60u5T6Gbp4TgIgnGCBsEgnNfBNKiSk2rT9PpjNxoF1vKlZauhtgcl8oypAOnmoMI3FPUeeZU0MSnu3L2J2Ef1z6TW9F5gjzHATm0m8m9mzAOHnTmgtaNCr7KnwHOuY56FSPhNdEa_ObrTwLedvXCfKvGNWuy0o3XTCPX813hwIwcDSFKMe87ezd88ipBlu7MTi4JO_HbJyl7MCCGDERAagEf-IIcxuGCdDxJGNpwiYyLq4nfcybwgEritxlUiBKVCTzrEbgh_e2IOqYI55FhXl_p7NznSjf5Awy7GzYc980iVAjH2i372iWkUCIDQiO-eeSwLyJV5knQulkH4HnYDsCl6bFemMWj3ZBEnJgVqG9-GmviS8jjveUgE-jPfpx0wGSs7Bj-KcFP37Rx9vt4c1OkNTYLAL8trTy1iSzISMvNteRw_AUcVdpwnNimsIFaIEeEu3zeBN9iB0-ECwsovaD1kHr5OGNBE-pCeHIJY2xGO8Yvf6mIsF2xdSOxze5uQ1BXV8KNJ54aSLL0jIZL8H1iwomUMmk4UIM59jLry3wDgXc9XKQcXm2YlOff4_68cyWI827pumrRWfWS9N_SD6Qv0e3F4PsxkWtjDmsBGJJTGbuHQjuiexteAM-wzemhjptEtrf3V9B4R_TtDToe1FLcRf_n6pmPuuUE6Lq9R_p4Ez21coU0d-Q_93NW-sJ2Vq1dMLSIehYXV1Gk-OqhJ9RqfTvXLWR6jLpEO0HWq0AyVk2b_8vs5PFBqEv_i01KBJPEGx5jHSdDA_JWJ0wlzEHS29TiVpNuWAsUjDXveyqf7faHvB6-AgSK-4D8ZpVjW2eHqGyCr-1_gqZEKp-WBULJxNUn5weToVBjtWNvUVlm_O2rrrLNyptOL7809T1wm5yaTI360RexALVorjF4KHQbpy5SLGbxTzKM0Ntkl1YvX1gCcZB6RPX25Q0ffAChz7X9ea3cQp-O2unVFz5ZLer-uLlXDALT4PQEtlS_QQzVpnQ58l8R8aksqo0wxK8vkHEsmAlDMO2YabGYlgDtZwadVpDrRVfNmSui8uFA-gWQqzFY_gcRSJ5ss1xOc0Rl87Tsy_aYgFsqVLPox4RhefC9OvPJROF0CL-H33CEZnaIHopp8OxpdOKC7MgVyk24HS6Chdr5nYyPj7KonHOrwmfjaTZsXjlJNxcBo1f8Ez4DZQ9P0ClzD_m4Esj9Ck8iibFaC2A6sEz9zEjKNfqDz7-2lZx6IT4vDavucG60MoWUhEHrS_lpynlSGjH14_NtRHSI04_VzP0iSJ3cD3xamuET4dbPIaUrocmvkQgfIv4MTIxrLI-FN0JOIKJWDprZlbvBIxuX-WvJ531Oyx2nyrkM0P25oS89YWi-Auzc8uRlpM423XwBjIg4PTgecI8Bp-uen3rtnh15sa-BzZCCXUxIqlGWcmM41PgBSw2IVJy6Zod1EhUcItN-Dp6BgYTTBXG_4gSRGVpqxHUjHBtjZHO42hNZ_2qJL3H-YdElUAEZyvE2xTK_HiGDnS_nuuonWo-RPyfOsam74DewoyrYSLAvfzO75RjYNjenlrWXLDugI-UdEq8m28iyYgipSs6aQ1ubk4wWBfPz6tTZOZf8haAKZkN62tTRw2sNn_r8r4bTI944nj_Gf7jahGGqdLv-VSESQtmF_Gt1eUm-rRArpP3Yo92csJIIDHIo9mEXXo4kbhNaP5td_SJfC2D-YwHjdXJm7Y67Bv0IT-eWY9N0477qHxHpODduGcOeSbPRCRNVkpMkipRtCS9LJVTI1G72SFq90fLXrwuGDbGwZHdPsehNGalsK0NlGuY_6Pph6de8wksvneDvZYGywjJLD40bKdFmsRmwJH4LKTVYhvITUP8T3RfoFFeTy69FZ6S6cgKkZsTZoNJvgiB8NU6HyQCOrd_K5gpuLJwp4h0acNVHXYvK8xCaxPuYNF-NPco6hbt0p8P3MSn5-CxLJAV2GJjRTKlgV2T-bbOasos7RSjBbWtlXqTINjsGdZ8qkKFCvBc_Z_k8Asm0oEkAjNwFAMDTH9_82xU3zUMcc7mRRDuUqnuELuAe8Ih0Mx-C2WmOAxHNmu0nMKVFa8TJQFmBrdaDKHi4-kzOejSsm5oTh-05DkwCJYVQeWSru1GSvXRo0InNtM7w0EYLUVUxRlYZEv1RxURyjFHKRmrnB1oDS-s9pWo7JVtxrfQoUkcCpZbefELHVRNS9pEKH89bp9YUPODtzd0ZlSD12CmPPkMRXxggejwrGHc5F3QWRCGb15du58xCjVPILoVMhb1RChBz5PtxMrddYJn3YE5fAcp4IvlpJmRcZayT1KuED4n8ozYBVfhO30MwabBTpRuYDVJPb7uYujtNmEWwnjZeOTCKHtGMqLrUqfYXee_bBh0tLCKo-jVe-alrSi1OYsI_VDuGTA0NLizOa7FB_KOtHBVau69OvpzAvIolgQm70uYDiEVX4gyBLsEfsUJ20Ltgl7icVz4JFWCysYnKPsdJMzOJA-lQqC8P4S6tp7MAYVkL0fmtmLJe3MrLmequrRh74TElNWAr9cb0YU9XLUAwyjuMUDrvz0NAplpxBkl1eiFuRM6Am5E2m4KrlaxXi8qP0zCaa8Ckk_ehipEehuO5F0O5vLv0QU8wY3MTjOuzJF8HgF2maso5keEdErqf74bXwgiD-TqSE1QUa4dK3GNkiRgJZfXYm3kgazYvXwxXhbObP8HeXEnjg5v11GT-l8qktXm3LugHPYac9iox7PFmc8XutFk0nDKcq3Q340DXCxTM9Nq0LfFU4sLp6YuxO8NjSu59f3QjHYLlbmRxVyVtQWko-h4k7ul3JD9OL1paq8J8YSZSY5oEdnXuojOOqjkzlhIenXK9OFON6UksclB1RnRvOXZ8PGEQk4ilZogMTI_Zw8jthQV6nGDAFuswXkqJIv4nImDehpc3HnbZwTAb2EGISbpKCGhmGUI9PN2K13sHarWZDGdznoCzIEzNXv7Yd-xXaG8TgNsSddJDJYyo7GqRt_GJbNVKOGiGvohPye1ryTl4nkgHIfl9-Mb463kHHUlbQgB__HvRhVUutqoxppGUFv9vG3ldDgIBGsAhn_sHhIjUOzvrbNzFxEgugo-tnFi-0ulGGoc6AjC26SqTZK3s0oShT9lX8-30LUs_yfpvTCw_RTLQsiPQ2JbXozSbnZsoXrJy4y1P9t7w-hz0ruRWl3nfbgJ2Cd8SHcR4qIiplhL9k2zCBshluobHf61Gp6-9PZ8n-PSq8SDX_4RawcEIKcuwKv36ixvsSIj-NOeCT5Pzorwq4pXFzoMKgPZaFNOs4urh319BqqdhzSPB1thIzRT2MOmsUsv6oiD-7b4awSqV-CBy5uxTgv9qiHKuM3IqkExDH66u_7W2iU0GDRBcapCd5MfV-haAoXyZfH5m7uFeL9YYBJzYv-nX3Vmp69wiUOeqvCPv_80LNuEpsMoXvT3PxV5NmegDgYIaybvHDyTMT3uZ2yiZDIDDjcHkSztu7l28senIL_QGkwNo1c4xEc5PonvMa8uKXaKNkawb3tbczAPJlCoEIby8YJn9xU85K9vIgL-q8EUO8l0cp0E0n5c1rDKPlczs1hsA0K5LNxaYr9F3NczAKYdR8kaI4HVHJ2hhbFoS1_u8mPiH5sPtDbbWlbg7wKM0rxAJZLqBYgFGOEE9drb52tzyyldlqTBxkFQ3IXlBj-GT-3uY2TCRCVizJOgM1xwWbKNFV-VWI0XqVEyGu6JwKxABCLvlDfqxRfQNu3EvfDb_W-sDEM1wEmIMZfah873yv5npBjmBO4SfnxdKJoWofVIdLvXDn6MiOO3Js2-jIc_zd2FiYLUh2DWjGW8Ia_1lgzoWss81U4PyJiNi60OlJWQFJ5fcJoXyaYoriKRJM769Ix-kFmWtqBoUgKCmMJbn0QFTNZLCcsTCtu6deqCoSIngMIYzNGQ7IjAayOMXK3IubCd94yq_3gNm-pOelPxjcU1i0cxicMF8TnoCitnUyjblAyoFpAhEYfh96GxKUfwfZNj77V4OygN8TJGXptRLvgI7a3Q0pSraDhcLfAc4yO8q_5KI6oJlzYSFMaNrm4HsKpWc95TcMsn5-3mcOUlUFVMuQrLlRTWkidbIIwdeSWFgN9IodgidRvFqyNrsBTN24kd8j2i_vUYm0r19q35FYbklOFl6MfbSVL9EXVZicF-60YjGnIet-YJU_YT4Aca_azBcvdfpTy5MOasX49cbGA3EqATKgXKCvqixhMZopW9Ucz1sy213vZtPWLD4ePJSmqkhpksNG5U3jhuYB4mHzxAwXlkQ7yCLN3rA8xRIbABfDecBQrbBwv2Kk44z2JFwj52DNtEsY1ZOPYxVVJb19iCRl3qmt5Wfn9MWdYjQtgBLJ52wAD5fw-Kd4jC4YpSJnGTaka8ZWrIn1aPbOj6ySUFlS9q0BkF4_mPvsR-zR2N4XHLGDPUsGkV-wcxgtZSqe9NF9W93i9MwRsAIwSx5ANPz4XXB1sCR-h7pRy-1wvKYbKWDsm140Q0MurtS5FLLxfzWDAWEbXkCdnWQSs8FK1tDMtzHgRF5Dzc3PDxUTkdjAz9-Kn_hkA-N73J95QmPjX5E2TZNYANBebHBgw2C8sJavmnJUpDpPsn6RnytFQh2q8F1s-gSIYKjHGAlAH-puW-23oM9boroKfBCaGs1NQzRwwwZmdqvtcr3mWvCKH5AIegk34brWyd2NpeeYg3bsvtufEUUM-2q5RE5375rHTceL2kcIivOJXmw3GrzQC4TIs2j3zW3y5pjN0Lmc92WV9Am5gQDGNrSprOWCy3TUeCYCv2E_U8YABzXszrs21-k5ATDrFU74ng4OZgrWRDKYcruldnZrLbLq_mOhoRvWmCyHwh2XH9zq7fRZC7oVcHNsQ1fukvSJeqcVKpL64xq0nbYCCt4rsnkUC1Oo5rsNOcN-3z49bIe7EAcXkfWoqF_QlyXpQlpw1dle_IRR1xCWP5pYmdk0HARKFUAgYBTzHnmbRwrpiA--fXVa1YQrbgJuzxeasMBjiLgBC60YIjzMkMRKByS72BlOhpXgbqZ6b4BehPFvmmKF9XvlOMcuauOL2RB81tDNch15_rDi5Dt3JjCmr4d7LZlBTfHJxWhECr3ebUPf9K_yw54frXwHEknqIl1e0MMXnOUnP73gNA6cqcqVTWHE0SOcRJPCjtP3AB6REd5mBOpzIwoeSTOSgPMxIekXpTH5z9Mv_4inqmR4YYn7yfwUhvqmFgUBSK9QEtWTzvGH-xBC-l8CsPtD7ISp11QWKBefEdz0KdlHjEFwpQgseCmvtMUE3hX-4vtM93C6xSE1UbxblpyrPewLEGqBtGOVyIy1De7w6vod28iIEdN5F7Kw7NahdlPRgAQlLIKFPKajilzyByUfrL57MHsv2MXANXJxgkQAZp_rU0TXvZaZbubmZ0dki75ZKAXnqRefooA8fl8Y0z40gTZHmnVwPtOTe48dnFRDD4RucyfBjW7GynsKNNXLJpVomdZm9ePxyEZianatMObhtavORPFScP9FbRRj5SQU902Vm4nalOtyg2VViaUqp5TKw4yYZO-9FfYU18JHaVq6iglQPIj2I_eHj68T8o3l2sTV3Ej8mjO-8eh0imZsL2hmJvdlhgyZDqQ3V_6Fp3iKkO8J3CsW6DdSAKsU4mAI3U9NFhpSLzBax4E69kXcc3m2PXsvywcx0vDZVaZVaB-8mHgOgxqYVb8pG7c5eqF4iOIsN9t6UdJ-YK0molAGx9qvyRkCdR9bNMqWMLbIs_Ql85070f92F3OZU4gkhbM2CkDk58trBqXgf1kP3A5gRunTIg6nbgzeykXIByhGgYspte4GwS_RKBymMK3cC-d2CKJUwk07KaTwNaqN58LNx66cJD6-AhHxX64P5iCWaP16hgpG_JlG3Ese1Jxrm4p4RS6agTS447e08Lu4YFOzvoSkPRd8O4fjER0CYpBsGCDOx4xsBaGNNX2HzFBIgsCKxbbIHmlUxmtQhIIXbUi8OWBamOx_B2AKZPG5SuxzoilAPkf2Y3QQxAydeZ2dSD2oA9LjNK7qWbKgMK9ea0VAiy70fEQcq-BxHu1zOu8xDoOH61qMC99IXDJsPY4OoetXHtdctGc3RsvBKm0bMHYix_MtlifMZjmEA5UNWRomM7C9u7Zgtz6KBLB5jALKldag-o1qmm0_IG1st4G_dr-qy-iypBcYZhhdy1sXFg1qT30pJHqLA4dKvF8pKX964mnB8H35vVB63ozqslNcmXTbWr0U47u88not11quU8nIeVjrUiho6EoNcukmcxJ0XKMP4agYhBOeagO-za53wiefMSSUV6EXiJbwliyrOCch6tezO_FBs8tr-zoH6TNpJXlBZYD97unDIY-UxmIKNtTsZkp1wWjxRaWf5QvJ5BftB9KuRc3Mjfg0uTKI8Vp_BD18QMO6HuT2E91l6x2lZBCBWO_4JkG4pBEgCw9wvDO0LN8_CQwe9FPOb4m3dHew7Hk0juoiG_CK2BopypyS5svEcKYcxSQ_Q3zs5SY9xjfQTtsbpMdrgcRQumvE80JtRIvIATTXd0RIE5tJ5WnNvlbORfDmj1MxYCiZsGb-x68eb6CDqio8Py5pe9_Hy5dI7ulnTHJ2OIinhTUW_cLU9NRDgi6ewVYlQaVApOj0Nf5J-zE1Jx9M-LoF-31wohUEh-fs9Y3TehrItyATJhYXS_cz4ecdJ4PRXmG5fYfvUvbXFJYAjcUXFpAJ9ob5UtwitJDqXQQcE3bvKgB2tWHo8Nxu_EOaSs0eZCNSmdM76OpSg9KsLUeXktx0FM3Hxfcc_Y6MzIIobVZNA5zAZHV29Uz4F_kusPy6rD-uETRwxY06C6s4fEqHoNatU0uDIaOWWnNHBpbgomWGrIs6oMelM5DU-NCm2WyPkSkDI_n346s65Fha6QFhnWo_rTstgAQY_bzym2N8nS2tFQ0YDlg5bo5Prh0AX2tUrw5D8ZZzxNdXacTLEjIWLxf7iKiv-np1i646_ijirTb54bq9gfQAEB4-hkfWiHzn9dtHOp3qDh0pd-dPcn7HwoN6l5HzW8QlLHI7TOt3zO-8IEPosVBpYkoaypnhhqjHYfOaSt4rXaY1wJOfYCpByg1FBHABVZY4HKMDN6IIzyK9gM3wpZR6i9RzeGqD-PKBHylBQOElyyLNPhskiX9sFNmX67yg1COvn9TaKOIaZhEz5WGQiG48niQAqED0GjqR1IUS_iDNsQAuX4sZw796PK3m2M04nzzXMXKEeBIULOFPdbyJ52IeSjYKhmbKLNvcS2wLM7dgW7LLqnp8JraJPzot1jn4SwHKlNcxiIAagT0VPXuwSAteV-IJoYJAzkCBzJgMtTCOhdvf7DnvG8vQbSVaP92B3KruR8RV4mmNUWBQjpZgKL3LQNfS8SB7CKcWVWxOSC4hh5ZomqJml-dAQljJtoopX4LhwOqiE80Xvr01srcEuz9XVx8-ToiYGZIQX1OkD53pqCjC-VzS1S0v6JBA2YZhHs3CyNwcD1Nv26oWyj9mfX1j7FIrKsYpMwivt_1x6XX7GWCt4Lb-9eXmj_wyWS441QEoUoM4tOZfJXD01GQWrM59_uqMg4H1tHPmGRX2NCVE0Fktu94D04UE5Vhc5iEphNpMEIt9OD47PSMuM1SnWaI4TtyuwQf3jgtMmj1BuNqu9MhKV0wsPr3cvXz_EsJL6_1P2RtYRj4wrCZKTGs1iTyxYLbQNlS3rBlfWKGVQ5t24OArxT1gyEtnRKtGKq4uIL5Ji7wC70giZpha4YQG5m30IDSnl_9wMPoK6_3ifm8jPmOu7nn6xBJtqxi0KbUp3K2G0IWFtmaIORxH_Iy4ianFLM8ydRds7K_gChlrWyEhvq68a3s1SglFE8ntQvhWChT5syd3S1r4HfDErwfT-6KG_0VGnUTBjV-jOWBTi7-7rBE-rnH_cVARN9sWOyGf9dG5Z01ygq8YWHJdVOmch1Am3peZ_QjzPbKlfXSXEc876MiG6RmVIhmX-mhkjLtitThv0DY889CyigkHQE_kpljqBO4KMQLGx43dx2IY8M48hw8VttOlQoKz551iVShMANVw_x_1NwYS4KrFjvb3wdo_guLxg25OYup3vwqLCY5_qMIRESx99D9OxZUwkWF2DO4Z8ut6t9Z8UT7TMRKpt9RGU2uqvrljhy1mGHyobWG6-xtaY-Z1iT38ifVsPF65ugHIlhXdMC3lfKpsFRdmZ8hdPIqn99C5Wvt1et9wq8SOLh3kFYG4ih5-f2T4rXVn9unRJ-wWzsvX83fp8hgnXz7c6PSWWolzJjZWNtwLiyWVu_Evr_FjXu0RMz16ilyYHBpHCzLbl8CuTQX3wkqVgbIK0AUNUL3IAlZja5Mds-DEr70oYTkC-J4hhCTE6h3zzadrfNMfHAQjXdhLhNNjtAcOxWmgDP3EtC6AEXFaWx_7B7pfbFGlOb6I6gAC8C3rJel9Y7-JxKOQPvimAZ-hhdJDxaqxyEINNhD2UIhJeZWA24M6ChxgcSoT0N65gub6hEtRcZicHCFk-N7JMv1SpgQoC5XbRkH7kWGhc0CNS73X3lkutxrSnMGLbWovSka4u36mAy3w0vB2ajaipbiMlLbrgJfosmVKl6h89lK_isMNjmX5_CKPqhKx9E3yRKSea5BwlW_WfovohWP4Zy8wOqnnlLh1DH6g4Ch-UMj-PVyQ6aVIwR-8cXjJM0MGB791_n88yjRBNJu9N5AnGfOk7rh6eHc7sPW-NHClo7KD1DneSVcLfXb7lKO8d0ILl9GooTDBkfDzJc0eCxUygxggX9aRhen_IsGiM4WneOKmmM2wyD09sLoyBZFX9l3MOHpQgcMEMZYdXfTLKSWcZRY0xGGrPreMMl4OlOvrwzqXUPVI9KbPcgbQ0TRY9xgpcA-4u4P7rJhu7-cngxxcGgriEr3sVWq3S0fEtjHWjwQ5W1NyitJc4aKkVNXqlX6yml0MZTMwOcE93Ye8QNdt3VuYZzKkhiawtM3CT1BXAuT3WB83ZqhRTP2E4PwoWlHN-P0WqByKEzzsIK2KUajKuss6HcRoEfXxyGa01x8VfUXHhaH-nFQ-EmX8DeH8lQBT5ESJ4VgRcMm4XPq7iOxtFHfneR_q8NWmyNiXMHiSKfR9w6OmZ1L3M660x0tWPRD13BUg5nSrCN0pDz9h4fWsmfc6I-nKA3abpfl85aEOUsZ_UmXuLPYTtEIl6szqtQkHQa_3BIRRCmi6aHv0do7k19TKUVH0CHqZjFqb1ThtV3WnpeNEvACWsqdQwVf6EnzxAcDzBMoe-XkZuSI2wRCKzhsYZy671CS-x3ZJH2mUCfp0Xea4LMyWJOr3FQiAF58QyS6fQH4nEtEsMblkm5_0HDWNAfOGW-ondFXZqSC-208Bs7C6uVXDZpgD_N_rpwXREfk7BAMTAGsMKxhe7bkX5Js5UbIgV3g9jTc7s4zuQ7saf37vPSH9rmb0ca4XOI530XBckpAmAJgbSgEPquUuluIOYBdM43SHsTmJbwMN_7BhVzNcT25SphKB8KOFvC18URNiGsKLd0V3byWvSKGNOIDvfEBN0TcLsT0QbUGmBXwGoacMLMl8FlXixG0AcQyB2ho-eQSzdl92Tvl-rfQypm3AbBt0OAez_WLgQATMlASK48VLR4V1OkMANzHwiEtSQVMWuoqSzdexyH8jwzMRnjqCDG8FxzZXk5PSPpGuXHSaub88ivruLgrKv4r1HH52gw2CNWtr8GBoEmWNdnAAufmqXL-f2bdJsWydlevl0uUfpD0S0RqUoDTGVeXkOsj7EFz1GMeR8In08zdmoFIpdZIg_Y2iJwHCwrf8jiJeEUBOwDo8zSygJMeXA1tmE6l-_foecXlPJJcRWoTyXJc-eMMZ4ZPHmZmsFULWow6KExY1qQJns-CXJ4FNIWHdg8NXFehovR03qdK5BkyQIPsrj4Tz940B924Z8-f9choZ_EwfTksXvgGeVvrQl-5Pjftzb40RrmgblVQCt_LtBV0fHprplY2lKXgDqPNHC8p1PKeL-oCpVl-xva-ho7ZuLGu2OpQ4E2yA4EU3heUi5Tkl1bG5JbJttDN_OvEdtCX2HPAYt4BsRpMYAVMRpWqtLbqMVtoGfqRaeQnT1l99ohjDfFTdSHMJ1aAUGWWwvExq5C8wlXcMybJjHGzJSWghDTjO7pqMosnaI9NyfpwlmsYQBDu33h8YdGpmb8iq_vUYeA-cE7gAhfKvSdQkhUiiWfEK_K3n1gO8cYCAbpTY3hGqqy8kR1ExFObI4hNGhCI7XM-L9RkMvjO40P9wbnmiMC2LnXLiDz-gYYDf3VVuJNsEBSiZ1m3Yl0RoRXuWhrngZY1fEGEj2MSBEbcy01Wcb-Ixs6uVXXk9mC-_jXyqjRU-fbCtEAw6faCkH5-cP3l3ny1BhJg_9-eqxmeiE4fsCQH82dPu0H30AAUqZlgS3eo_gqwUWHf0bAGb8tvwhJYSVCmxgbRl61DLkek9QHLm6NOhdSVa87lErAwLwe-423n0K90SetbpROAqQ1SIZnAF0dTk9lJRxKL9XosdJdo_MGbRQrjXK_7KRmM4cVBZUOvKsCrV0nh9vhEWqgTQTShKnrFRYRiVCeKdrIPfncdKgbY80JFuSQNLNosiiIFVEXFBLuuEDy-ORWlkM-6kwxIN77YaurdIs7RT2dV92FMuuPWpHQgTkfr4hXD4nrq9BVigtitMVEPjL5UsAz4WTAWEXsTH2TotfaEqoS0EpYT0zFgJb4EY1ojstBTvpU-VOWQX2Ie4Ws6Yw3s2Vv_JnDHsZqejV8O5Lz7KVeeaX3UtDT-M2hD_KILOYTtdslyJQjt9G4i1lvUJhhdWeHtPcyrAH41Gp3_1dx3CL9eZQR-YGXqA_BbCoeTmdYFuKnKx7uLA8ojxC7-nYJn-05ATl3Gdm-zrxRg6IywxEsBt7I4z1VNpYVCMQoRbyN14DThhItdjYvrIcpN10sp3_y9YPwR0ZiRhSmBpwX3HWXjlJhjTEucTbHgsMTLztLTe7u9T4-h6WthC3Sg0MPU5UcmnijJ8aa4KcPWQECL0WIfG61wICuyq23riAzXNeWtTOCqL9kElPzM31XnavcZFZEHNmu8tRe4xy6liJk-2aUOUSYziev6IoEyTievlUNOpF9q7V0FosIY2KyoBx-TVN4EuSbyKPmWPmX0VKVgilDSC1InylamKTsSHVN_pwwyVUgxh39O6SHSrxnaUBCe3WmUhqDJP2Xqf09ggAMUAy8FyRNUNloI_YON7jnbUrw0Nvb3BXdk8Xn1IOR3EV014OxS9w8Y2NxBYCTwee_BVt-sLCCOrSJ8g2awTvvVV28UR6xOZQUaRpVw6eWcCpdMsXZBtqOW2r2FuPH2Q1ORpic0JE3VIa_Uacd8BChvkVmApot3bPBXN3mkV8ibRV3CNB6dPPgT57cHCPOwg96xqJiEUfFFa1F1iYFmkkIENZ_3Pj1mJO_xn48knQzUUXuMEXsB-Qe2EwxKBfjipIxY9KVAnHFCcMQphgCsmlK09IqI8Ldn0HNDM0qQ1eHRQ58i7_CU_k3UT81JwRBwvaxpksQKwvkkGg6e_NfEABJW-rW2V5yC-OIqpeNIOAHpUmapadePJdHg6AMnnPCXtVrwKR0P_l5UE5Xbi0C3-ao14DOVgYRyvsNK3jBlYGezn3bvA2lt7hQ1GBQnYkUpDMUnaPYczEQ6LZZBwPM359O8noji7mkuuerobIct3_X82L6m9FD2a4q044RXuZ5r8f8JW111XyQExhyYjyKo96D5gk8IJSKSJGAFaJLSXzP4R1HROUiUNKYaaGp6rcMxQ4LLsNFLlzMclrvxCvo2pzCf_c61-XGj7UpI41GyhJDBQgGZb2j_QTUCgVXRKG0oJWUgJYzEMqlCGTF4T0d4Sbyj62pp6fLilynYsBCCktmIUkxHoWdaz6OMjKjGvIhRC-ypSZF9lww6XYCWOhuCzf2SBWgHRTfPBZtUm4ng2L1buosY0X0MeXAAneeF4xTxtrjXsyuv25SMq8kSPKxPIg2Ksrizad7_qMqvUkkzMJJr3aKID9rhoVv0JYP0fo9jQxquKd0DMlBfOuALaDIHsGRnoqVj8ZBGIFeVb4PJdlAjonha1BwKVtzdMWyzAXmNYQAuuxEDJ1E07YaHjkPmt7XDmov4xFGDipVLGYuginKZw_g6r0OHi3lewke0wf7uB-UhBsQHPG8kSHlURIgymBNUixjmfhzV35i0whMEbFvsmLxmTvuB4AClWr-HAtQgaqnnbXoNZ1Ct4dsFQryXQByepSVgYssN8TEkOpo2Z-SZAs0f3CsmAcYSK2GqfLcGpBbKd5PmcfXt_ofCe9ihEU2KcT38-89CFYxwqHrfA5qMxdzl8ZEaiqPtbzI7kCgKMjLc0aHxnYZE4mM4dxdcwgmOWz1TiHW5DCZ_w2bIBu0arF50Gr9_qUH-bJeHJuMlVToaypgBOt1jMZZHDt-XM1WGz-8fDK7vnqGWgeVZl1m_QQeKJHcznsbwG2dZGKMjsA99KsWBbIKAXBxX3IkCo96FNaM7nuJRQMl4zqLfw0lvvxE3OIGvOcl4tTLXK0wbhSSW48h9NQ_F8QR_pcXGUjdNAa9MDX1gvGVmML-v6m46TBupmj7UOwu9gaikaB3EiADjgf-WjTu7YkP4aD0wK6GxpQdLPNA_q5512ymG1Pp3ugVEh5DlTZmRET9D3w2o1sPrTPp5BTzrder7gg66WiP4qxUYo4WnEjU0QpSSMtzm6oewgHqEy9gVnskC2xSVGZjUvtXfaMLXOlfcCoe6XiljL1ZDfb1f8EEigop0gwVDZArdpc3s6cWK4D9CE4A9VumwwZdFjE2Mmq16AJ7OqSwJIloN1ltPhmQxJNESOyEwRgZdxNVYGqDrMq9K_74J27yLFv6mRFBIMwlq-d4FtzF8nx9nJ_nTBe2u55We3LiEuNjHSG7DyKFS8xAWI4z4z9oTrOfRedcMkREFYeT-PNUg73-EaohT2AK29-iDRy-K1d9wCP3iOzo6vPv1Uz-ceQFpW5jpAIdjjIiQg7cv2lb90Bzhdu7ihT87ExhCDbF7l_AQ_xpSaxDuU4EDnIuiuvP5Ixk6R8kAZPXrgOAZEd-UTVimK5pZ3ooTDo4sWxKUsB_wcxnQdEJAaREPjG5VY7toMsWsWnzPflYqYCnKHGXR7GN63A0AI4EI48Y3SMP2hF4nKBmM30G7PFGX7gLLEbOdcOAINT7s-bKvwMFt6D3MycmOgljvV8_zyySdpGOZnuknpL3h687dTF2vAhdsurCMJtUVI9G2MP2Y5yEsURVwbY_zCQhS3io22ZL7JBv28E28eW45lQ0SVAMe2auB2JieU19cbRnq74nznLsn_OSuJQZ95Lai5TsvbGRpeEZ9bNv03664QTW6KJIltFeeNbBa7WvC-XMWqQ_lkO7Ho4MysFtwFCUmi13E8JfVCJiCf0U8l4Nj36z0uBhfemc6KYIu7tE1RV6ygmwgYFI8YKzB1e_iLoM8SMam1ZjffU_p6f8BLkY30Bwd8huveJMd0d9SjMgsnD4ypKchDAmMZ_0AlY7rbzMZz2E5NY7QZWzyKXXRwQdRWhsz5icMuBtX3i9u8rHe-0DMeg8VHk349-M-gWkeszeAxh_icvfiaqosMpNZD6aBhUSFugTTolRCpehd0gECmB_0MB3WB2OlfmC3OoyhAP2e5PNHUUMpr2Cx6HcWOC6Arv8L-xeAmET9HMpunbl4cIxdjexsOQ3QizdlgnqN50jVYc0fjYyAXddk6Y3g5B9hVCrokx57huKvebn9vwX217pgy2sCIHDJjMu4RYY2Z7fMNMYgS20uClz0lDfH5ZP0oWmccGy3O_YcBcUnMZIzXgeVVgzqSrok4oNCJRXMX_xq_NsgOhYmVR4V-5CeHJx0RN73vFFvlH07xCp2zDZcy77pSolhwMVvOG_gK6Jm7PrFPi8mfkH9TOewnu6iTPgT2LzXabaNLcPjB2miqosMlu3ztcZHa0vN91lbudmgcM33kmOyDxM6_ExIpyFeDnuNsRuta3WpuOZHIkoI6JrzHmfC9ipKaJ3_fWTKR1Xw_J8mo5jbbddbyUwAx2441HZkbkZaZbo7ihxo643TlMfT41LW4t2fybeuMQ_Yx5LMjxyoE6UFFXYCeTh9T8Tp3CSC6SgVQkMkgrh6U8FecpIwMWpPKmyKlG1TDMKn_Kb4ADi0gvy0114E2rfo9t4cED4-vGp0nGVfBnJtRBjJK1Trm2t22Ju6ogFQtJllS0stMUdxSHFlmxaSDdhUB7gAkK1V7oSpOrwZPoG0ZeeuxkvEkwUlOwtDtTLB0ii3YjX0GCT2PLw88N_2nnpwR6zK89ieaBfEC8crFiPJYFM8BWekLVnTs_6hubAp65dk96BZivquzrIAfaNIgCuXfzKNM1sdZu-L38tnTHqkfJA9cItbDvIAFWMgpvSj0MzQ7rbLN_0cfCBgeL9-l9yFvZNO2UFv5Hn_VK0IkNaLRgKMSpUL3mpyFadMTVMLyMvoEzw7QV73MZVd3TNwBGT-gWlXu1fcAEoG28QzwBWbUCUOLLRA7Cbz5pTH_4bCS_t9xqgdEBdjREmcvWg-v5LOJiIsHP-a3tqGrxoa62OlYi-oOza2CjTiwI1uGwUPnvyX3cMAXQ_l7QBmnyx_LW54z-IPT1FJBqhX85ZZ1KLfs0el-NjPdo2DrwtfSPklLPSujVADUwUggl1ZaPUdfhJ7F4wiQXjzwI07ZwgM-2NnzlgVG3zkHGI_1ob9_n499s68X2noZt4ESugm7W4jgILuDUbz4E6BIelw_DfQlRt-hvcuvnk47CcHgdGgS9z6BlB6IJSJ2SE9echKUPJw6ynonA1GI_f0FgDhxXplkP5J1bQaJGwSjh2J-VSWsQmJcMNL18aqY5V9ieUksLDeoB89I7XiB7gc6P0t7Q1iwqp5yrnLVCmmUDAyrTunFFOmV5u0ZbwV6J7xsqzHDtR-CikGM4vkLSZ41ro-_5xGuPB72cjVzNbzRBAbimTV7i5MbFsneANaB1qpOhhLntWRK-uNjrIK1JxH1wlCx2quyrEY-aulhBNNOrN3RdBkqufiZE6ZzeWEbLVErzo1gxAuhZWqRyAw3ZVbFt-Sqvo_bIR5B_TvmHsZTuHVDvFuTARGqg7uDFc5IlR7aLrZyhqmZiWD_JPZL95hoiQ7TxIg827jz1MzG8wB3qQodV9YXQ3Tg0vWaENriaZjAW6wiekgbKHB0Rh63E_AJumjt47YC4NBe6T8i28RsUhFsBuTTLcr2VRh105LPW3-nPzvHPvAhBxkKGCqmqWsbQa0TFJy7zPwv13OgpDFFr6c5_1UushEgM4_xkp5lsj0sMguvKvb2x6wCm_6Dsgx-i9NE0RAYln4UfaYfIX9no2Jt__ggNtYN0q4GEqVWrMeWrmVxB-CQCL_SsJN4-Q4uExGFqbbZtfJdjXuMOWspocHgQlfMAZRlrVCeD_vJach2CFKlKVSD0TX_xDohoiqRi5DIVpA5bliNCb5CXw0yoJ6VSchEWx0TvXg-CZn2DvwzzG4ZTI7rhEpOVuDZvfqE7QeEZ6TCGQ2BdfMbhYGUQxuCjPtHhUc5ta70ta4IlYR_8jbYIbkkSIUSvP_CA7UyNGssfbHESh9pDLclHnLUYpOmlzGraq0NqZ3iFpVqFt46xKeGv0CY4tqRhFJzLcj7x37RuFPcvGKWqr_RgNNh5SE5tq4zV8KCqXlv9trW7peRNWkymlO9clavn610HscEWFpNuBznq-bJ08aP89J3lEv5Iii_e4ncXX9z8da_4tMrzCOTlOjKN6ZVA0ukbg3oXdGnoU3WKF1JiBz3un-R5XXqgCekwVNrrjfSoHJFtjNrEbl17Qw5A_S0w1_jtGGHIAA4javmVCA3MDiRbfQRhPnbFDTz0xOi6-GP-cAmSPN5uQbvZ1sSx6eyHqI3_oylVFxhfyDTRumWcwWCGy-0UDKxjJjhfQk-GUxmFSRwL5MoiRZXbzWHCNDD2fUZTpZbvjDI_K_EbYbV-uFpv11abcK5qaaKDcrQfGv9uslD6IqXMgS4MIHHFUgQGBygy2tlM7QODAl2kTeijf40Z_-VGKodCaawy0KaS8C80-0G8HqDk6Pd7lY-Jw5xYyNbp-W1NyuRGJT5jYu6DqVCnujLWz2wd8lis4py8zQsUX9heGerTVrzIBwQJQ2AZ2yHszf8s1LNetFvQAu6t3illAuOil2h8eqCWc8HSEkId3hllpZ6VLmnLavc4lDqWE6x6M5UUynXh1jRerok4ulrcXUtDuhoGVfstoJv7U91wptOa2adkuCP-KFUcgEklpoRZgEmaj8Usygq4d3J0hTxTvWlK8AYhBQuykScIuScIEYx5MQgHDsJmpBe0nK0c-O-e8qoZairkIc8G29V0Ug1P07qnoVm8u0OpmMDh0gjkL9jTQZ8NaWnp0oDKHMJotX2fnJ819ePdiELuMS3CkT650mbEGDT-Twk7C3tueWqfKSNrqp3icRe0lSsZfReHlFqi-zix9JckROOPTGMOh_pRIL53Pz06yZuzJc6i3WzRb-b7x6hWlkDEhos-vzTZq5kxYtbuSmCcWlN141RLeJZSFU9g4qQ0_fvYR6XP_C4B60qZlQJHCDkSnCMag8FnwAfIkTvoylC5fwWrqLvJtLOneFQiu6SurYcDRq6UyPsyfIG8RRr7kWrr-o7iP7T0_Z88mJqJ2qk1YmWAdXFnxgr5iKzSlGogTLCC3eBgLt4wv9uVfKmoKcsgMCe4cY4G4uP6lfH0x_l2X8OJcZgdZOZh_Rg_f304p2fQ0UmM2oQCQTi-iJwv8H7eWLOWYVsEvx4rxiKbpQIM0rbC0LRw5qVA0ZrJSv9GheiEN-HPXXej2ew4fYN_VIY1wEugD3bPia-084iCr49K7HtNwmGb4rihZJlTgPxcTMyexNvclfXCcXh01MX9DUOlhIVQ-DevOz-SDw3D3QMmgfsfPli0weEHMYYvNRaeBqZeOz5sOB_A=="
+        },
+        {
+          "arguments": "{\"command\":\"cat > /plan.md <<'PLAN_EOF'\\n## Root cause\\n`requests.utils.get_auth_from_url` is brittle: it unquotes `(parsed.username, parsed.password)` in one `try` block and falls back to `('', '')` on any `TypeError`. On Python 3.8.12, proxy URL parsing can yield a `None` password in cases that previously produced an empty string, so the function drops otherwise valid proxy credentials entirely. That prevents `Proxy-Authorization` from being built, and the proxy returns HTTP 407.\\n\\n## Changes\\n- `requests/utils.py` :: `get_auth_from_url` \u2014 stop doing all-or-nothing tuple unquoting. Parse username and password independently, normalize `None` to `''`, and only unquote non-`None` values so username is preserved even when password is empty/omitted by parser behavior.\\n- `requests/sessions.py` :: `Session.rebuild_proxies` \u2014 make proxy-auth header creation consistent with `HTTPAdapter.proxy_headers` by allowing an empty password (set `Proxy-Authorization` when a username exists, not only when both username and password are truthy).\\n- `tests/test_utils.py` :: add regression coverage for `get_auth_from_url` with proxy URLs where username is present and password may parse as empty/`None`, asserting credentials are not dropped.\\n- `tests/test_requests.py` :: add regression coverage for `Session.rebuild_proxies` to ensure `Proxy-Authorization` is still rebuilt for proxies with username + empty password.\\n\\n## Verification\\nRun targeted tests:\\n- `pytest tests/test_utils.py -k get_auth_from_url`\\n- `pytest tests/test_requests.py -k \\\"proxy_auth or rebuild_proxies\\\"`\\nThen run the full test suite (or at least requests+session subsets) to confirm no proxy/header regressions.\\nPLAN_EOF\"}",
+          "call_id": "call_GYIpv6bHIehiJkJdwBQq7Qun",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0e4b2a5a417145a9006a683afd76c081939dc51cccc3496d52",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 9769,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 8704,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 7922,
+        "output_tokens_details": {
+          "reasoning_tokens": 7510,
+          "text_tokens": null
+        },
+        "total_tokens": 17691,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785215746,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cat > /plan.md <<'PLAN_EOF'\n## Root cause\n`requests.utils.get_auth_from_url` is brittle: it unquotes `(parsed.username, parsed.password)` in one `try` block and falls back to `('', '')` on any `TypeError`. On Python 3.8.12, proxy URL parsing can yield a `None` password in cases that previously produced an empty string, so the function drops otherwise valid proxy credentials entirely. That prevents `Proxy-Authorization` from being built, and the proxy returns HTTP 407.\n\n## Changes\n- `requests/utils.py` :: `get_auth_from_url` \u2014 stop doing all-or-nothing tuple unquoting. Parse username and password independently, normalize `None` to `''`, and only unquote non-`None` values so username is preserved even when password is empty/omitted by parser behavior.\n- `requests/sessions.py` :: `Session.rebuild_proxies` \u2014 make proxy-auth header creation consistent with `HTTPAdapter.proxy_headers` by allowing an empty password (set `Proxy-Authorization` when a username exists, not only when both username and password are truthy).\n- `tests/test_utils.py` :: add regression coverage for `get_auth_from_url` with proxy URLs where username is present and password may parse as empty/`None`, asserting credentials are not dropped.\n- `tests/test_requests.py` :: add regression coverage for `Session.rebuild_proxies` to ensure `Proxy-Authorization` is still rebuilt for proxies with username + empty password.\n\n## Verification\nRun targeted tests:\n- `pytest tests/test_utils.py -k get_auth_from_url`\n- `pytest tests/test_requests.py -k \"proxy_auth or rebuild_proxies\"`\nThen run the full test suite (or at least requests+session subsets) to confirm no proxy/header regressions.\nPLAN_EOF",
+            "tool_call_id": "call_GYIpv6bHIehiJkJdwBQq7Qun"
+          }
+        ],
+        "cost": 0.11429494999999999,
+        "timestamp": 1785215746.8322089
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "",
+        "returncode": 0,
+        "timestamp": 1785215746.953501,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_GYIpv6bHIehiJkJdwBQq7Qun",
+      "output": "<returncode>0</returncode>\n<output>\n</output>"
+    },
+    {
+      "role": "exit",
+      "content": "PlanComplete",
+      "extra": {
+        "exit_status": "PlanComplete",
+        "submission": "## Root cause\n`requests.utils.get_auth_from_url` is brittle: it unquotes `(parsed.username, parsed.password)` in one `try` block and falls back to `('', '')` on any `TypeError`. On Python 3.8.12, proxy URL parsing can yield a `None` password in cases that previously produced an empty string, so the function drops otherwise valid proxy credentials entirely. That prevents `Proxy-Authorization` from being built, and the proxy returns HTTP 407.\n\n## Changes\n- `requests/utils.py` :: `get_auth_from_url` \u2014 stop doing all-or-nothing tuple unquoting. Parse username and password independently, normalize `None` to `''`, and only unquote non-`None` values so username is preserved even when password is empty/omitted by parser behavior.\n- `requests/sessions.py` :: `Session.rebuild_proxies` \u2014 make proxy-auth header creation consistent with `HTTPAdapter.proxy_headers` by allowing an empty password (set `Proxy-Authorization` when a username exists, not only when both username and password are truthy).\n- `tests/test_utils.py` :: add regression coverage for `get_auth_from_url` with proxy URLs where username is present and password may parse as empty/`None`, asserting credentials are not dropped.\n- `tests/test_requests.py` :: add regression coverage for `Session.rebuild_proxies` to ensure `Proxy-Authorization` is still rebuilt for proxies with username + empty password.\n\n## Verification\nRun targeted tests:\n- `pytest tests/test_utils.py -k get_auth_from_url`\n- `pytest tests/test_requests.py -k \"proxy_auth or rebuild_proxies\"`\nThen run the full test suite (or at least requests+session subsets) to confirm no proxy/header regressions."
+      }
+    }
+  ],
+  "trajectory_format": "mini-swe-agent-1.1"
+}

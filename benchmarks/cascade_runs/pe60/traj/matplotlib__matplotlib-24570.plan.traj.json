@@ -1,0 +1,1427 @@
+{
+  "info": {
+    "model_stats": {
+      "instance_cost": 0.11305105000000001,
+      "api_calls": 9
+    },
+    "config": {
+      "agent": {
+        "system_template": "You are a helpful assistant that can interact with a computer shell to solve programming tasks.\n",
+        "instance_template": "You are a senior engineer acting as a PLANNER. Investigate the repository (working dir /testbed) enough to fully understand the issue below and design a precise fix. Take as many or as few steps as the problem genuinely needs \u2014 a one-line bug may need only 2-3 steps to locate; a cross-file change needs more. Use read-only shell commands (cat, sed -n, grep, find, ls, git log/show, python for read-only reproduction).\n\nSTRICT RULES:\n- DO NOT modify any repository file. You are planning only, not fixing.\n- Each response: a short THOUGHT plus AT LEAST ONE bash tool call.\n- When (and ONLY when) you fully understand the root cause and the exact fix, write your final plan to /plan.md and then stop. Use exactly this heredoc form as your final command:\n    cat > /plan.md <<'PLAN_EOF'\n    ## Root cause\n    <what is wrong and precisely where>\n    ## Changes\n    - <file path> :: <function/location> \u2014 <the precise change to make>\n    - ...\n    ## Verification\n    <how to confirm the fix works>\n    PLAN_EOF\n- The plan MUST name specific files, functions, and concrete edits \u2014 specific enough that another engineer implements it WITHOUT re-investigating from scratch.\n\n<issue>\n{{task}}\n</issue>",
+        "step_limit": 20,
+        "cost_limit": 5.0,
+        "wall_time_limit_seconds": 1800,
+        "max_consecutive_format_errors": 3,
+        "output_path": "/home/aman/cascadelm/cascadelm/benchmarks/cascade_runs/pe60/traj/matplotlib__matplotlib-24570.plan.traj.json"
+      },
+      "agent_type": "__main__.PlannerAgent",
+      "model": {
+        "model_name": "gpt-5.3-codex",
+        "model_kwargs": {
+          "drop_params": true,
+          "parallel_tool_calls": true,
+          "reasoning_effort": "high"
+        },
+        "litellm_model_registry": null,
+        "set_cache_control": null,
+        "cost_tracking": "default",
+        "format_error_template": "{% if finish_reason is defined and (finish_reason == \"length\" or (finish_reason == \"tool_calls\" and not has_tool_calls)) -%}\nYour previous response reached the output token limit (finish_reason={{ finish_reason }}) before you produced a tool call, so it was cut off. Respond more concisely and finish with exactly one bash tool call. If you need to think more, do so briefly.\n{%- else -%}\nTool call error:\n\n<error>\n{{error}}\n</error>\n\nHere is general guidance on how to submit correct toolcalls:\n\nEvery response needs to use the 'bash' tool at least once to execute commands.\n\nCall the bash tool with your command as the argument:\n- Tool: bash\n- Arguments: {\"command\": \"your_command_here\"}\n\nIf you have completed your assignment, please consult the first message about how to\nsubmit your solution (you will not be able to continue working on this task after that).\n{%- endif %}\n",
+        "observation_template": "{% if output.exception_info -%}\n<exception>{{output.exception_info}}</exception>\n{% endif -%}\n<returncode>{{output.returncode}}</returncode>\n{% if output.output | length < 10000 -%}\n<output>\n{{ output.output -}}\n</output>\n{%- else -%}\n<warning>\nThe output of your last command was too long.\nPlease try a different command that produces less output.\nIf you're looking at a file you can try use head, tail or sed to view a smaller number of lines selectively.\nIf you're using grep or find and it produced too much output, you can use a more selective search pattern.\nIf you really need to see something from the full command's output, you can redirect output to a file and then search in that file.\n</warning>\n{%- set elided_chars = output.output | length - 10000 -%}\n<output_head>\n{{ output.output[:5000] }}\n</output_head>\n<elided_chars>\n{{ elided_chars }} characters elided\n</elided_chars>\n<output_tail>\n{{ output.output[-5000:] }}\n</output_tail>\n{%- endif -%}\n",
+        "multimodal_regex": ""
+      },
+      "model_type": "minisweagent.models.litellm_response_model.LitellmResponseModel",
+      "environment": {
+        "image": "docker.io/swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-24570:latest",
+        "cwd": "/testbed",
+        "env": {
+          "PAGER": "cat",
+          "MANPAGER": "cat",
+          "LESS": "-R",
+          "PIP_PROGRESS_BAR": "off",
+          "TQDM_DISABLE": "1",
+          "BASH_ENV": "/root/.bashrc"
+        },
+        "forward_env": [],
+        "timeout": 60,
+        "executable": "docker",
+        "run_args": [
+          "--rm"
+        ],
+        "container_timeout": "2h",
+        "pull_timeout": 120,
+        "interpreter": [
+          "bash",
+          "-c"
+        ]
+      },
+      "environment_type": "minisweagent.environments.docker.DockerEnvironment"
+    },
+    "mini_version": "2.4.6",
+    "exit_status": "PlanComplete",
+    "submission": "## Root cause\n`HPacker` delegates cross-axis alignment to `matplotlib.offsetbox._get_aligned_offsets()`. In that helper (in `lib/matplotlib/offsetbox.py`), the `align` branches map `\"top\"` to the same formula as `\"left\"` (offset = `d`) and `\"bottom\"` to the same formula as `\"right\"` (offset = `height - h + d`). For vertical alignment (the `HPacker` case), those formulas are opposite of the intended semantics, so `top` and `bottom` are effectively swapped.\n\n## Changes\n- `lib/matplotlib/offsetbox.py` :: `_get_aligned_offsets` \u2014 swap the `top`/`bottom` handling in the non-baseline branches:\n  - `\"bottom\"` must use the current `offsets = [d for h, d in hd_list]` behavior.\n  - `\"top\"` must use the current `offsets = [height - h + d for h, d in hd_list]` behavior.\n  - Keep `left`/`right` behavior unchanged (`left -> d`, `right -> height - h + d`), i.e. adjust branch membership rather than formulas.\n- `lib/matplotlib/tests/test_offsetbox.py` :: add a regression test for HPacker alignment (new test function, e.g. `test_hpacker_top_bottom_alignment`) that constructs two `DrawingArea`s of different heights and asserts:\n  - `HPacker(..., align=\"bottom\")` gives equal y-offsets (common bottom edge).\n  - `HPacker(..., align=\"top\")` shifts the shorter child upward by exactly `max_height - child_height`.\n  Use `get_extent_offsets(renderer)` and compare extracted y-offsets with `assert_allclose`.\n  (Add `HPacker` to the existing imports in this test module.)\n\n## Verification\n1. Run the targeted test module: `python -m pytest lib/matplotlib/tests/test_offsetbox.py -k hpacker_top_bottom_alignment`.\n2. Run full offsetbox tests: `python -m pytest lib/matplotlib/tests/test_offsetbox.py`.\n3. Manually run the reproducer from the bug report and confirm:\n   - `align=\"bottom\"` aligns the two rectangles on their bottom edge.\n   - `align=\"top\"` aligns them on their top edge."
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant that can interact with a computer shell to solve programming tasks."
+    },
+    {
+      "role": "user",
+      "content": "You are a senior engineer acting as a PLANNER. Investigate the repository (working dir /testbed) enough to fully understand the issue below and design a precise fix. Take as many or as few steps as the problem genuinely needs \u2014 a one-line bug may need only 2-3 steps to locate; a cross-file change needs more. Use read-only shell commands (cat, sed -n, grep, find, ls, git log/show, python for read-only reproduction).\n\nSTRICT RULES:\n- DO NOT modify any repository file. You are planning only, not fixing.\n- Each response: a short THOUGHT plus AT LEAST ONE bash tool call.\n- When (and ONLY when) you fully understand the root cause and the exact fix, write your final plan to /plan.md and then stop. Use exactly this heredoc form as your final command:\n    cat > /plan.md <<'PLAN_EOF'\n    ## Root cause\n    <what is wrong and precisely where>\n    ## Changes\n    - <file path> :: <function/location> \u2014 <the precise change to make>\n    - ...\n    ## Verification\n    <how to confirm the fix works>\n    PLAN_EOF\n- The plan MUST name specific files, functions, and concrete edits \u2014 specific enough that another engineer implements it WITHOUT re-investigating from scratch.\n\n<issue>\n[Bug]: `align` in `HPacker` is reversed\n### Bug summary\n\nFor the `align` parameter in `HPacker`, the options `top` and `bottom` seems reversed\n\n### Code for reproduction\n\n```python\nimport matplotlib.pyplot as plt\r\nfrom matplotlib.offsetbox import DrawingArea, HPacker, VPacker, AnchoredOffsetbox, TextArea\r\nfrom matplotlib.patches import Rectangle\r\n\r\nda1 = DrawingArea(10, 20)\r\nrect1 = Rectangle((0, 0), 10, 20)\r\nda1.add_artist(rect1)\r\n\r\nda2 = DrawingArea(10, 30)\r\nrect2 = Rectangle((0, 0), 10, 30)\r\nda2.add_artist(rect2)\r\n\r\nalign = \"bottom\"\r\n\r\npack = HPacker(children=[da1, da2], pad=10, sep=10, align=align)\r\ntitle = TextArea(f\"align='{align}'\")\r\npack = VPacker(children=[title, pack], sep=10, pad=10, align=\"center\")\r\n\r\nbox = AnchoredOffsetbox(child=pack, loc=\"center\")\r\n\r\n_, ax = plt.subplots()\r\nax.add_artist(box)\n```\n\n\n### Actual outcome\n\n![download](https://user-images.githubusercontent.com/23433306/200162888-702626bf-ad47-40e2-8751-7dffe91df85c.png)\r\n\n\n### Expected outcome\n\n![download](https://user-images.githubusercontent.com/23433306/200162908-e0e9dfd5-6f8b-4aac-975e-bb363d809c41.png)\r\n\n\n### Additional information\n\n_No response_\n\n### Operating system\n\n_No response_\n\n### Matplotlib Version\n\n3.6.2\n\n### Matplotlib Backend\n\n_No response_\n\n### Python version\n\n_No response_\n\n### Jupyter version\n\n_No response_\n\n### Installation\n\n_No response_\n\n</issue>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGEwZTU2OTMwZTdlZjM0YzAwNmE2N2ZkMzYyYTA4ODE5NWEwZGE1NzY3YjhkN2JlZjI=",
+      "created_at": 1785199926,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a0e56930e7ef34c006a67fd36a2e481959293a253cc061940",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_04NXaq6vGor2xPuzA7-msgXLc0vv3Y9sH5zgHS5RTKMU6WH_ou6nBndTayfC0C_Uv0HRYyW-hWXilQaQDnt7cIaZ1iNMRPNnn5rLctr-qfnkR_fw6Vk4Gdt-kKzfBPdHI72Z4BcByEpqYx3qO7tDgFD5jIsimHOp2kwXXjWuucT8e775RzUknTCihKZsGqfMR7VyGYCtxsrRy-Sw57B6MxcMLPofddWJe5d7CR50u0krUr89hYB6tDUd5gveGBFNOQp7EUw7FhNocinU8LH7ublHYcbT7JE0ik88_WYsLXIq0FAp5B956YIe2q_yfY_UitiETCXJDfstK477Qk5ff5HWA22W_8Lw2kyWK9bilBMh2B0mRYuCW6UCRMYBuDTtmuCAtqKDhmVlIVi2ZCrRgNwxN8LTOOHi6I3vslscww_C_LCnvexouTiVo_HuyNKkZ-klwFcewily0xJCoPAhWvHH9bP0gZs8ZPAYQAD1N7QQ9OKwWlJZLxUvLewcf2W3MInXSH106zkCnOKwvbxgz5Y_PDidTaf2Msa-g4fHgmh9nEiCi4jZkcLLfzLsoTiAFTbpuBcqRmuZuhON3wSmcgm7rHVpEsfQWAIZ6RVhRcY7bfAyawjlONq05s1lXG7YjnrOJ_RgOIxvXrEkRecfXGKNKQLEH8lkLE6LLlR3Y-PRrQR2suRTrPFnkYjwyh3FFRF14TFOGoBhcQSmERaBL4g6i1I1SUOrpS40QQsjJ8kfx7x-ajWZoRcGPCzD5mnMA6T3yVuIMsMIV62eqzKHNnfNUkztiACZVRLUOLFZ8b6X1Qp_DPYmflvNB5nEbJVOmSC-0ZEtUhhyobsUqb1srWkPZUkCR0Un91vk9knnNZbNxUqD6pwTjNdknoPWyR9KlMXX28CB3Qg64cIZ9hVEnoPUGTIplZ9KAmMyw48y5eaKDA8Ye-uWhho4JbGrU1YD4ITBIAt56_CreWWkIhS8UvAuT2jSnnqyneYEBsC15Xyf7Bsb3sh-lR-y8cCbDeDXZgLCN5Z3fEvxtRS6Sq6EaTtJ9TleZs3_-0olp0f4Nvrof7wTG_WqWpEL-RGn5RS5zg3eXBGeSb5BbhIvpsD0DyysmR66go8UBit4LP6FdEmP2ON5rwcYQ1usiJHX9KqG09z98JBE30zpPH8dcL6PK-KLmk8MKnFgOiGz7qxETsG_zvAp9Z3P8xin4TeeupvmKzDGPpWP5Rknrg9P4qiTH4FCxpsJxtq2tmBr6d5bO_BMcB0VzRa7KuUh0-BqBtRJfUO1W5dYos459fm_cRjl3mAyt82dXn5SMwW_DMfZmaZLJb7nWRxkJJtni-zfDk4At4GBRrF4lpfxuhl1NF7uu2ncK032026ZN8EQ56Y-OsQhIzPy0BhqLM0yxYc4kuvPqz8LOPfrJ7stGqLOwfIuUYSBoSEyN-YALPcHoq0ol37Q_lFbSrOEYTJCZQ5lb9JRvt2L6dVSx-a_-7aDmYGdR-E-biRist27i8lrbO4Rz_syIXy1xr7hrtcBcOjZpFXPBcNjJxFHmGn4z1ygTcgFgVYxSWTqHDMt-BaGmiLjoZA24="
+        },
+        {
+          "id": "msg_0a0e56930e7ef34c006a67fd37762c8195b29ca45f87e4860f",
+          "content": [
+            {
+              "annotations": [],
+              "text": "I\u2019ll locate the relevant `HPacker` implementation and trace how `align` is interpreted.\n\n",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && ls -la\"}",
+          "call_id": "call_cOB9XnTZ8d71pRb2Bl1GBGEM",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a0e56930e7ef34c006a67fd37bf2c8195a658b2e0a82a8c87",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 741,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 147,
+        "output_tokens_details": {
+          "reasoning_tokens": 94,
+          "text_tokens": null
+        },
+        "total_tokens": 888,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785199927,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && ls -la",
+            "tool_call_id": "call_cOB9XnTZ8d71pRb2Bl1GBGEM"
+          }
+        ],
+        "cost": 0.00335475,
+        "timestamp": 1785199928.1407847
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "total 244\ndrwxrwxrwx  1 root root  4096 Sep 10  2025 .\ndrwxr-xr-x  1 root root  4096 Jul 28 00:52 ..\n-rw-r--r--  1 root root  3203 Sep 10  2025 .appveyor.yml\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 .circleci\n-rw-r--r--  1 root root   227 Sep 10  2025 .coveragerc\n-rw-r--r--  1 root root  4492 Sep 10  2025 .flake8\ndrwxrwxrwx  8 root root  4096 Sep 10  2025 .git\n-rw-r--r--  1 root root   331 Sep 10  2025 .git-blame-ignore-revs\n-rw-r--r--  1 root root   111 Sep 10  2025 .git_archival.txt\n-rw-r--r--  1 root root   112 Sep 10  2025 .gitattributes\ndrwxrwxrwx  4 root root  4096 Sep 10  2025 .github\n-rw-r--r--  1 root root  1777 Sep 10  2025 .gitignore\n-rw-r--r--  1 root root   639 Sep 10  2025 .lgtm.yml\n-rw-r--r--  1 root root  8849 Sep 10  2025 .mailmap\n-rw-r--r--  1 root root   164 Sep 10  2025 .matplotlib-repo\n-rw-r--r--  1 root root    44 Sep 10  2025 .meeseeksdev.yml\n-rw-r--r--  1 root root  1150 Sep 10  2025 .pre-commit-config.yaml\n-rw-r--r--  1 root root   529 Sep 10  2025 CITATION.bib\n-rw-r--r--  1 root root  5678 Sep 10  2025 CODE_OF_CONDUCT.md\n-rw-r--r--  1 root root    35 Sep 10  2025 INSTALL.rst\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 LICENSE\n-rw-r--r--  1 root root  4279 Sep 10  2025 README.md\n-rw-r--r--  1 root root   802 Sep 10  2025 SECURITY.md\ndrwxr-xr-x  2 root root  4096 Sep 10  2025 __pycache__\n-rw-r--r--  1 root root  5266 Sep 10  2025 azure-pipelines.yml\ndrwxr-xr-x  4 root root  4096 Sep 10  2025 build\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 ci\ndrwxrwxrwx  9 root root  4096 Sep 10  2025 doc\n-rw-r--r--  1 root root  1149 Sep 10  2025 environment.yml\ndrwxr-xr-x 27 root root  4096 Sep 10  2025 examples\ndrwxrwxrwx  4 root root  4096 Sep 10  2025 extern\ndrwxrwxrwx  5 root root  4096 Sep 10  2025 lib\n-rw-r--r--  1 root root  1390 Sep 10  2025 mplsetup.cfg.template\ndrwxr-xr-x  7 root root  4096 Sep 10  2025 plot_types\n-rw-r--r--  1 root root   152 Sep 10  2025 pyproject.toml\n-rw-r--r--  1 root root   446 Sep 10  2025 pytest.ini\ndrwxrwxrwx  5 root root  4096 Sep 10  2025 requirements\n-rw-r--r--  1 root root   132 Sep 10  2025 setup.cfg\n-rw-r--r--  1 root root 13711 Sep 10  2025 setup.py\n-rw-r--r--  1 root root 28651 Sep 10  2025 setupext.py\ndrwxrwxrwx  4 root root  4096 Sep 10  2025 src\n-rwxr-xr-x  1 root root  1069 Sep 10  2025 tests.py\ndrwxr-xr-x  2 root root  4096 Sep 10  2025 tmp\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 tools\n-rw-r--r--  1 root root   583 Sep 10  2025 tox.ini\ndrwxr-xr-x  9 root root  4096 Sep 10  2025 tutorials\n",
+        "returncode": 0,
+        "timestamp": 1785199928.2843647,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_cOB9XnTZ8d71pRb2Bl1GBGEM",
+      "output": "<returncode>0</returncode>\n<output>\ntotal 244\ndrwxrwxrwx  1 root root  4096 Sep 10  2025 .\ndrwxr-xr-x  1 root root  4096 Jul 28 00:52 ..\n-rw-r--r--  1 root root  3203 Sep 10  2025 .appveyor.yml\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 .circleci\n-rw-r--r--  1 root root   227 Sep 10  2025 .coveragerc\n-rw-r--r--  1 root root  4492 Sep 10  2025 .flake8\ndrwxrwxrwx  8 root root  4096 Sep 10  2025 .git\n-rw-r--r--  1 root root   331 Sep 10  2025 .git-blame-ignore-revs\n-rw-r--r--  1 root root   111 Sep 10  2025 .git_archival.txt\n-rw-r--r--  1 root root   112 Sep 10  2025 .gitattributes\ndrwxrwxrwx  4 root root  4096 Sep 10  2025 .github\n-rw-r--r--  1 root root  1777 Sep 10  2025 .gitignore\n-rw-r--r--  1 root root   639 Sep 10  2025 .lgtm.yml\n-rw-r--r--  1 root root  8849 Sep 10  2025 .mailmap\n-rw-r--r--  1 root root   164 Sep 10  2025 .matplotlib-repo\n-rw-r--r--  1 root root    44 Sep 10  2025 .meeseeksdev.yml\n-rw-r--r--  1 root root  1150 Sep 10  2025 .pre-commit-config.yaml\n-rw-r--r--  1 root root   529 Sep 10  2025 CITATION.bib\n-rw-r--r--  1 root root  5678 Sep 10  2025 CODE_OF_CONDUCT.md\n-rw-r--r--  1 root root    35 Sep 10  2025 INSTALL.rst\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 LICENSE\n-rw-r--r--  1 root root  4279 Sep 10  2025 README.md\n-rw-r--r--  1 root root   802 Sep 10  2025 SECURITY.md\ndrwxr-xr-x  2 root root  4096 Sep 10  2025 __pycache__\n-rw-r--r--  1 root root  5266 Sep 10  2025 azure-pipelines.yml\ndrwxr-xr-x  4 root root  4096 Sep 10  2025 build\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 ci\ndrwxrwxrwx  9 root root  4096 Sep 10  2025 doc\n-rw-r--r--  1 root root  1149 Sep 10  2025 environment.yml\ndrwxr-xr-x 27 root root  4096 Sep 10  2025 examples\ndrwxrwxrwx  4 root root  4096 Sep 10  2025 extern\ndrwxrwxrwx  5 root root  4096 Sep 10  2025 lib\n-rw-r--r--  1 root root  1390 Sep 10  2025 mplsetup.cfg.template\ndrwxr-xr-x  7 root root  4096 Sep 10  2025 plot_types\n-rw-r--r--  1 root root   152 Sep 10  2025 pyproject.toml\n-rw-r--r--  1 root root   446 Sep 10  2025 pytest.ini\ndrwxrwxrwx  5 root root  4096 Sep 10  2025 requirements\n-rw-r--r--  1 root root   132 Sep 10  2025 setup.cfg\n-rw-r--r--  1 root root 13711 Sep 10  2025 setup.py\n-rw-r--r--  1 root root 28651 Sep 10  2025 setupext.py\ndrwxrwxrwx  4 root root  4096 Sep 10  2025 src\n-rwxr-xr-x  1 root root  1069 Sep 10  2025 tests.py\ndrwxr-xr-x  2 root root  4096 Sep 10  2025 tmp\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 tools\n-rw-r--r--  1 root root   583 Sep 10  2025 tox.ini\ndrwxr-xr-x  9 root root  4096 Sep 10  2025 tutorials\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGEwZTU2OTMwZTdlZjM0YzAwNmE2N2ZkMzg3YzYwODE5NTk2M2YzNzU0MTIxYjA1ZGU=",
+      "created_at": 1785199928,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a0e56930e7ef34c006a67fd38f7408195b887cd8fd45dc9e5",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_067vOv6WJ1SeskTKBIWF5SPZCQjjv7Dq6I2oSqKeZji5yIjx-g-JTgEFHXHaZcf38TRLIUq0x6o1bNzTkZp_EB439txKHhzKNQAxaK-RCqFXIT7hjBmFJ60lTIWGF1eQrdZJ8MWl2j29F5fdbuU9ucZVSgzlwsYUh_jSy-slGAb95KQJugxfacLuzFMvNQShwE4bd8sxwe5DRexO7r20tFd3kDr2JIhJQOnU8kSJOV_oBB2z_NRCuIzY2aG3hUj2NAnoV9cojkbj4gl9AXlz8nx-L-1hQvRgT3JzGkqS2zifmiMo6-yDb2EExxtdR_B05PkdzIrhKNjVSgb_A1pjSAl3SHj7vGVHEzfxaLW64dq1Fmoq0ZWp1-k_-ob07SXLdc4fQbWpvlQwJmjbxRVsjPm48tDKSCdIptcPgezHDxVV9dVnnuYRhX4l7lMLyXaFgjPnHOgTKlc8LZAt-mi4K3Ffv6Qk4EXSm9VSjEk6uhOm04yxdOsEm05LTHK55iLvq3t4PGrBWXIbz86jlt8l2kd6XKqyQ5luCYYXgttE19kWKIcA8l5hABmergBNKJNwLqTLgxBFbqiBMSh9xI0n8uW1zh68BOlpKvEEklKy73jkK9i2iY_GzoeDLQi8TGZZR6iMoTboWKOestF5dVWUVEyIZaRlsrku2GZULjBMh2gAB0JJYPv2nm5pwc2QWgeygzbZglDGb3TxkQga1EnveF9X-B0u05tzO6evTp2-IOTKI5DAiL29XCUWsH9vmjUl7jsvodxKnCrT2H3O_gVfaorhFZAincAvatCzlTbG8T_t3lK_TetAxGcXyxaV511MZRCVSO1diT0PcrXtJBaVLWatEEB3Bqrp9TAXPgsSe0Dh_RRrM-NgHO0B-h9M2hItkrItWGh0TB04d88P3jJBrUUV24JnaVzwhwsawnRlb7Nse_tI4C4Cz2PqftOEXdnp74UVBWJ4oqS8SahfoWDlYAO8vzxIy40aZ0tHJn7I5tj09jM058DfKSW5jxwcQ8ClGUQ82gZiSGGukTVt6_pxEDoQ=="
+        },
+        {
+          "id": "msg_0a0e56930e7ef34c006a67fd3923048195b18f4f1772ef669d",
+          "content": [
+            {
+              "annotations": [],
+              "text": "Next I\u2019ll inspect `offsetbox.py` for `HPacker` and its alignment math.\n\n",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && grep -n \\\"class HPacker\\\\|def _get_packed_offsets\\\\|align\\\" -n lib/matplotlib/offsetbox.py | head -n 80\"}",
+          "call_id": "call_ZOjsdRHqHVyBKEBdKFUZnb4p",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a0e56930e7ef34c006a67fd395bfc8195a09446a932e8df80",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 2082,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 108,
+        "output_tokens_details": {
+          "reasoning_tokens": 23,
+          "text_tokens": null
+        },
+        "total_tokens": 2190,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785199929,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && grep -n \"class HPacker\\|def _get_packed_offsets\\|align\" -n lib/matplotlib/offsetbox.py | head -n 80",
+            "tool_call_id": "call_ZOjsdRHqHVyBKEBdKFUZnb4p"
+          }
+        ],
+        "cost": 0.0051555,
+        "timestamp": 1785199930.027012
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "8:    Anchor and align an arbitrary `.Artist` or a text relative to the parent\n49:def _get_packed_offsets(widths, total, sep, mode=\"fixed\"):\n72:      ranges and each box is left-aligned within its subspace.\n74:      left-aligned in its subspace of width ``(max(widths) + sep)``. The\n130:def _get_aligned_offsets(hd_list, height, align=\"baseline\"):\n135:    horizontal layout (i.e., vertical alignment), but the function works\n141:        List of (height, xdescent) of boxes to be aligned.\n145:    align : {'baseline', 'left', 'top', 'right', 'bottom', 'center'}\n146:        The alignment anchor of the boxes.\n162:        [\"baseline\", \"left\", \"top\", \"right\", \"bottom\", \"center\"], align=align)\n164:    if align == \"baseline\":\n169:    elif align in [\"left\", \"top\"]:\n172:    elif align in [\"right\", \"bottom\"]:\n175:    elif align == \"center\":\n373:                 align=\"baseline\", mode=\"fixed\", children=None):\n387:        align : {'top', 'bottom', 'left', 'right', 'center', 'baseline'}, \\\n398:              and is left-aligned (or top-aligned) therein.\n414:        self.align = align\n440:        width, xdescent, xoffsets = _get_aligned_offsets(wd_list,\n442:                                                         self.align)\n459:class HPacker(PackerBase):\n478:        height, ydescent, yoffsets = _get_aligned_offsets(hd_list,\n480:                                                          self.align)\n683:    The text is placed at (0, 0) with baseline+left alignment, by default. The\n703:            is (approximately) center-aligned with single-line text.\n730:        (approximately) center-aligned with single-line text.  This is used\n732:        baseline-aligned, but multiline labels are \"center\"-aligned with them.\n784:        ha = self._text.get_horizontalalignment()\n1116:        badkwargs = {'va', 'verticalalignment'}\n1119:                'Mixing verticalalignment with AnchoredText is not supported.')\n1227:                 box_alignment=(0.5, 0.5),\n1273:        box_alignment : (float, float)\n1274:            A tuple of two floats for a vertical and horizontal alignment of\n1308:        self._box_alignment = box_alignment\n1413:        fw, fh = self._box_alignment\n",
+        "returncode": 0,
+        "timestamp": 1785199930.1543179,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_ZOjsdRHqHVyBKEBdKFUZnb4p",
+      "output": "<returncode>0</returncode>\n<output>\n8:    Anchor and align an arbitrary `.Artist` or a text relative to the parent\n49:def _get_packed_offsets(widths, total, sep, mode=\"fixed\"):\n72:      ranges and each box is left-aligned within its subspace.\n74:      left-aligned in its subspace of width ``(max(widths) + sep)``. The\n130:def _get_aligned_offsets(hd_list, height, align=\"baseline\"):\n135:    horizontal layout (i.e., vertical alignment), but the function works\n141:        List of (height, xdescent) of boxes to be aligned.\n145:    align : {'baseline', 'left', 'top', 'right', 'bottom', 'center'}\n146:        The alignment anchor of the boxes.\n162:        [\"baseline\", \"left\", \"top\", \"right\", \"bottom\", \"center\"], align=align)\n164:    if align == \"baseline\":\n169:    elif align in [\"left\", \"top\"]:\n172:    elif align in [\"right\", \"bottom\"]:\n175:    elif align == \"center\":\n373:                 align=\"baseline\", mode=\"fixed\", children=None):\n387:        align : {'top', 'bottom', 'left', 'right', 'center', 'baseline'}, \\\n398:              and is left-aligned (or top-aligned) therein.\n414:        self.align = align\n440:        width, xdescent, xoffsets = _get_aligned_offsets(wd_list,\n442:                                                         self.align)\n459:class HPacker(PackerBase):\n478:        height, ydescent, yoffsets = _get_aligned_offsets(hd_list,\n480:                                                          self.align)\n683:    The text is placed at (0, 0) with baseline+left alignment, by default. The\n703:            is (approximately) center-aligned with single-line text.\n730:        (approximately) center-aligned with single-line text.  This is used\n732:        baseline-aligned, but multiline labels are \"center\"-aligned with them.\n784:        ha = self._text.get_horizontalalignment()\n1116:        badkwargs = {'va', 'verticalalignment'}\n1119:                'Mixing verticalalignment with AnchoredText is not supported.')\n1227:                 box_alignment=(0.5, 0.5),\n1273:        box_alignment : (float, float)\n1274:            A tuple of two floats for a vertical and horizontal alignment of\n1308:        self._box_alignment = box_alignment\n1413:        fw, fh = self._box_alignment\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGEwZTU2OTMwZTdlZjM0YzAwNmE2N2ZkM2E1YTI4ODE5NTk0NTE4ZDU4MmRmNjg1NGU=",
+      "created_at": 1785199930,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a0e56930e7ef34c006a67fd3adc0c81958d10d8d1e70c258f",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_07sES5xg78nFa-SIOIHkLdg_ALRNOnLeTCdMPS25M4EP-KG0J9sFaFOqu89yxHnWekj-WEDJdyYzTkDQb_g7QSOobOArVJDgML08G82aPecPiNAMU8LJS3xOO9PXgyIctZJs73XCjjzmTj_RWHfJsLS8mES4xl87mbdrSZVSjiOj4KxkFlGkZA5EuddPs0q2XbN2zv_8E_dqtkxLx22iyN6FObqz9BKyaFPaXhpN-clUxzp3aTtbR_uRuuEklgXKOiCvxsz9qn8y1oo2jgF9TQwq_7SpXEYfNBaL01dNN4_eTmll207blRNSafuCtVvt61vDVssO6V02gxbFwbNksQ1sCWV3_VcVvEHtwULYEDyuHkkJJoQVtfhWlefVec7JBfTcYrqF31hVEzarmOq_w0xUtAuMvYMgSI0iHk-8kK2IRP9GpNoD8UJf-fOj4_p5mAdT6JnFpHSH-4b73xr9QKlof7tSuetM5TZok1x2XE6dynEbaQXOJMhMxKb2HEWB-mZLpjA7i65wViItDN9ItUfVYiHx6Bz8tFbfzK1dXW6ZA2sPB8pl_pxC_-twReiqlAb_uqxjniFE5clrYnrh7Fp3mEBnoi5Id5wOmv4T2tuhBvOYgn3MZdErVJMe7tF9oRmZcB9yilmApL7ESQMuJG5Ot_Mye6TNCTVRG5ObJYaTmPT-HoX4GYP_0mox_bBsu64zXPLw_HmfIegF46TWNXa_Ph-dH7fehtWf_4xBomlliRc2eU2-mKWwqe7Hm2dSr6qp3uefYVTutZ3-MnQGEyXMW9d3m4YT0Ty9jG3OP2Ytx1z2HquxjmyqXxigftQWyJ-Wkn_B-J5DzJ-Sqc7ZIivbD-kQnbBIZYNcdWB6XHkzAcThvp-cLNkR325f2DR0al0ayeRk78Mifowih-03W9y4hy4xzfzx_4n5YgNnfKTkaX0_nnSas6mBnhgd3BeurdIU3axaejnldP6SXKexXamxG06oVwiL1kaAeUk7xhrfocnIGnfs5WaNw47ug-X4IW8zwO6Ej7pa2H5ohfTbTtSg=="
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '110,220p' lib/matplotlib/offsetbox.py\"}",
+          "call_id": "call_BA5y2G3cUw4g4EwSPzqgQcuu",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a0e56930e7ef34c006a67fd3b17c08195b0c0e9902312aae1",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 2763,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 1536,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 62,
+        "output_tokens_details": {
+          "reasoning_tokens": 21,
+          "text_tokens": null
+        },
+        "total_tokens": 2825,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785199931,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '110,220p' lib/matplotlib/offsetbox.py",
+            "tool_call_id": "call_BA5y2G3cUw4g4EwSPzqgQcuu"
+          }
+        ],
+        "cost": 0.0032840499999999997,
+        "timestamp": 1785199931.708051
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "            sep = (total - sum(widths)) / (len(widths) - 1)\n        else:\n            sep = 0\n        offsets_ = np.cumsum([0] + [w + sep for w in widths])\n        offsets = offsets_[:-1]\n        return total, offsets\n\n    elif mode == \"equal\":\n        maxh = max(widths)\n        if total is None:\n            if sep is None:\n                raise ValueError(\"total and sep cannot both be None when \"\n                                 \"using layout mode 'equal'\")\n            total = (maxh + sep) * len(widths)\n        else:\n            sep = total / len(widths) - maxh\n        offsets = (maxh + sep) * np.arange(len(widths))\n        return total, offsets\n\n\ndef _get_aligned_offsets(hd_list, height, align=\"baseline\"):\n    \"\"\"\n    Align boxes each specified by their ``(height, descent)`` pair.\n\n    For simplicity of the description, the terminology used here assumes a\n    horizontal layout (i.e., vertical alignment), but the function works\n    equally for a vertical layout.\n\n    Parameters\n    ----------\n    hd_list\n        List of (height, xdescent) of boxes to be aligned.\n    height : float or None\n        Intended total height. If None, the maximum of the heights in *hd_list*\n        is used.\n    align : {'baseline', 'left', 'top', 'right', 'bottom', 'center'}\n        The alignment anchor of the boxes.\n\n    Returns\n    -------\n    height\n        The total height of the packing (if a value was originally passed in,\n        it is returned without checking that it is actually large enough).\n    descent\n        The descent of the packing.\n    offsets\n        The bottom offsets of the boxes.\n    \"\"\"\n\n    if height is None:\n        height = max(h for h, d in hd_list)\n    _api.check_in_list(\n        [\"baseline\", \"left\", \"top\", \"right\", \"bottom\", \"center\"], align=align)\n\n    if align == \"baseline\":\n        height_descent = max(h - d for h, d in hd_list)\n        descent = max(d for h, d in hd_list)\n        height = height_descent + descent\n        offsets = [0. for h, d in hd_list]\n    elif align in [\"left\", \"top\"]:\n        descent = 0.\n        offsets = [d for h, d in hd_list]\n    elif align in [\"right\", \"bottom\"]:\n        descent = 0.\n        offsets = [height - h + d for h, d in hd_list]\n    elif align == \"center\":\n        descent = 0.\n        offsets = [(height - h) * .5 + d for h, d in hd_list]\n\n    return height, descent, offsets\n\n\nclass OffsetBox(martist.Artist):\n    \"\"\"\n    The OffsetBox is a simple container artist.\n\n    The child artists are meant to be drawn at a relative position to its\n    parent.\n\n    Being an artist itself, all parameters are passed on to `.Artist`.\n    \"\"\"\n    def __init__(self, *args, **kwargs):\n        super().__init__(*args)\n        self._internal_update(kwargs)\n        # Clipping has not been implemented in the OffsetBox family, so\n        # disable the clip flag for consistency. It can always be turned back\n        # on to zero effect.\n        self.set_clip_on(False)\n        self._children = []\n        self._offset = (0, 0)\n\n    def set_figure(self, fig):\n        \"\"\"\n        Set the `.Figure` for the `.OffsetBox` and all its children.\n\n        Parameters\n        ----------\n        fig : `~matplotlib.figure.Figure`\n        \"\"\"\n        super().set_figure(fig)\n        for c in self.get_children():\n            c.set_figure(fig)\n\n    @martist.Artist.axes.setter\n    def axes(self, ax):\n        # TODO deal with this better\n        martist.Artist.axes.fset(self, ax)\n        for c in self.get_children():\n            if c is not None:\n                c.axes = ax\n\n",
+        "returncode": 0,
+        "timestamp": 1785199931.8316262,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_BA5y2G3cUw4g4EwSPzqgQcuu",
+      "output": "<returncode>0</returncode>\n<output>\n            sep = (total - sum(widths)) / (len(widths) - 1)\n        else:\n            sep = 0\n        offsets_ = np.cumsum([0] + [w + sep for w in widths])\n        offsets = offsets_[:-1]\n        return total, offsets\n\n    elif mode == \"equal\":\n        maxh = max(widths)\n        if total is None:\n            if sep is None:\n                raise ValueError(\"total and sep cannot both be None when \"\n                                 \"using layout mode 'equal'\")\n            total = (maxh + sep) * len(widths)\n        else:\n            sep = total / len(widths) - maxh\n        offsets = (maxh + sep) * np.arange(len(widths))\n        return total, offsets\n\n\ndef _get_aligned_offsets(hd_list, height, align=\"baseline\"):\n    \"\"\"\n    Align boxes each specified by their ``(height, descent)`` pair.\n\n    For simplicity of the description, the terminology used here assumes a\n    horizontal layout (i.e., vertical alignment), but the function works\n    equally for a vertical layout.\n\n    Parameters\n    ----------\n    hd_list\n        List of (height, xdescent) of boxes to be aligned.\n    height : float or None\n        Intended total height. If None, the maximum of the heights in *hd_list*\n        is used.\n    align : {'baseline', 'left', 'top', 'right', 'bottom', 'center'}\n        The alignment anchor of the boxes.\n\n    Returns\n    -------\n    height\n        The total height of the packing (if a value was originally passed in,\n        it is returned without checking that it is actually large enough).\n    descent\n        The descent of the packing.\n    offsets\n        The bottom offsets of the boxes.\n    \"\"\"\n\n    if height is None:\n        height = max(h for h, d in hd_list)\n    _api.check_in_list(\n        [\"baseline\", \"left\", \"top\", \"right\", \"bottom\", \"center\"], align=align)\n\n    if align == \"baseline\":\n        height_descent = max(h - d for h, d in hd_list)\n        descent = max(d for h, d in hd_list)\n        height = height_descent + descent\n        offsets = [0. for h, d in hd_list]\n    elif align in [\"left\", \"top\"]:\n        descent = 0.\n        offsets = [d for h, d in hd_list]\n    elif align in [\"right\", \"bottom\"]:\n        descent = 0.\n        offsets = [height - h + d for h, d in hd_list]\n    elif align == \"center\":\n        descent = 0.\n        offsets = [(height - h) * .5 + d for h, d in hd_list]\n\n    return height, descent, offsets\n\n\nclass OffsetBox(martist.Artist):\n    \"\"\"\n    The OffsetBox is a simple container artist.\n\n    The child artists are meant to be drawn at a relative position to its\n    parent.\n\n    Being an artist itself, all parameters are passed on to `.Artist`.\n    \"\"\"\n    def __init__(self, *args, **kwargs):\n        super().__init__(*args)\n        self._internal_update(kwargs)\n        # Clipping has not been implemented in the OffsetBox family, so\n        # disable the clip flag for consistency. It can always be turned back\n        # on to zero effect.\n        self.set_clip_on(False)\n        self._children = []\n        self._offset = (0, 0)\n\n    def set_figure(self, fig):\n        \"\"\"\n        Set the `.Figure` for the `.OffsetBox` and all its children.\n\n        Parameters\n        ----------\n        fig : `~matplotlib.figure.Figure`\n        \"\"\"\n        super().set_figure(fig)\n        for c in self.get_children():\n            c.set_figure(fig)\n\n    @martist.Artist.axes.setter\n    def axes(self, ax):\n        # TODO deal with this better\n        martist.Artist.axes.fset(self, ax)\n        for c in self.get_children():\n            if c is not None:\n                c.axes = ax\n\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGEwZTU2OTMwZTdlZjM0YzAwNmE2N2ZkM2MwY2E4ODE5NThhZWU0NTc1ODMzNTAwYjg=",
+      "created_at": 1785199932,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a0e56930e7ef34c006a67fd3c86888195a4f7667633d5bab5",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_09MKWfll73_D81I1kw4EFj0haGKZ8IYFzgY0qVKA2fgFJGleNxZtfvUzgtx1gkiLVpkPhOSZNRdUQBSih4WxzS_MwHLXscZgJT9RKZJHSLoWltERBFd4gm2E4StcK4PCT5DRfOfSEYLHgLByhDZCx3IuWsa_hhdP59P-zCpuioCBAicU1tYGGuk6q_8m1l-vTVdLmfHSJ09iunG0lg07CF7HRAUOQnQSXIuuC_tkgX_5Nzdgaze_Bwprk9cFTrWhhHUAMkt6IynQunp_u6zsejH1deBzpXdEBu8VlEYxGWbxwWENtn41up05XDgZ8ljN_ehYYs4f1XEr-VeCqasI8kKTTD5tYILYj6cMWMgMZuFImtWnNDgR_MfMUaqpEoGeyxcBmyukBMJyAd0q_3c-v5-fhUi6fdgXPshKMqvxCDXbNddTwkKR9UXxIDI2p_0mCIS-WdK5RYA9NYQV21BJTSk9O_bGodNj4m2hzElcAxV5fAbi16hpv6_vpGOs3-MEJnWA9rXaZ99OhOcIfnMUDkHV2l1u89AiRUpOlpcO4X5Bb228XiGPvjgGlRAav7zOshh1Dy2e639kxxcXeMrWcSGRQ_2nZOfJ4kTgEe7kmanHYw2vL-fpMXTnCnj1C-vyFEmXnvcuFcwt2446uO9lEQrYH994NFydBxS2inGLLF-YYboUdDqD_3cVKFEtp_ZBWQ9Nbb36Rn6bRcJsXqqzZsT3JU2AdMPXf1PILUVKKBnqdvTdgGA-lDwv6v4H0ATutniHb_NWZ9hfDB1mfBLe5waBDwHfvLkQFHTy3Yb3t7xt0ROw62hJJRBxpW7i-aneD2Mg4w-3IWS_Ym7TcF8jKj4rQyPjhY1zUBgftWIuXX-fG_wROVHWuVNg7TEzkJQAlTA6FGrdtyg5mrCWp13Zn4i4SeYZ01W8Yajw7E11XLFnQBdo6V4xdZ76yMk_VEquWA0_W5v1ZPNZsad2BVHDRi2_DEv3mJo7tndastwQ44FdE="
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '340,520p' lib/matplotlib/offsetbox.py\"}",
+          "call_id": "call_5GqLLsRp6kvacdAka2V1gO1x",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a0e56930e7ef34c006a67fd3cb09081959cdcbc3370f0ebba",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 3713,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 2560,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 56,
+        "output_tokens_details": {
+          "reasoning_tokens": 15,
+          "text_tokens": null
+        },
+        "total_tokens": 3769,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785199933,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '340,520p' lib/matplotlib/offsetbox.py",
+            "tool_call_id": "call_5GqLLsRp6kvacdAka2V1gO1x"
+          }
+        ],
+        "cost": 0.00324975,
+        "timestamp": 1785199933.4627666
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "    def get_extent(self, renderer):\n        \"\"\"Return a tuple ``width, height, xdescent, ydescent`` of the box.\"\"\"\n        w, h, xd, yd, offsets = self.get_extent_offsets(renderer)\n        return w, h, xd, yd\n\n    def get_window_extent(self, renderer=None):\n        # docstring inherited\n        if renderer is None:\n            renderer = self.figure._get_renderer()\n        w, h, xd, yd = self.get_extent(renderer)\n        # Some subclasses redefine get_offset to take no args.\n        try:\n            px, py = self.get_offset(w, h, xd, yd, renderer)\n        except TypeError:\n            px, py = self.get_offset()\n        return mtransforms.Bbox.from_bounds(px - xd, py - yd, w, h)\n\n    def draw(self, renderer):\n        \"\"\"\n        Update the location of children if necessary and draw them\n        to the given *renderer*.\n        \"\"\"\n        w, h, xdescent, ydescent, offsets = self.get_extent_offsets(renderer)\n        px, py = self.get_offset(w, h, xdescent, ydescent, renderer)\n        for c, (ox, oy) in zip(self.get_visible_children(), offsets):\n            c.set_offset((px + ox, py + oy))\n            c.draw(renderer)\n        bbox_artist(self, renderer, fill=False, props=dict(pad=0.))\n        self.stale = False\n\n\nclass PackerBase(OffsetBox):\n    def __init__(self, pad=None, sep=None, width=None, height=None,\n                 align=\"baseline\", mode=\"fixed\", children=None):\n        \"\"\"\n        Parameters\n        ----------\n        pad : float, optional\n            The boundary padding in points.\n\n        sep : float, optional\n            The spacing between items in points.\n\n        width, height : float, optional\n            Width and height of the container box in pixels, calculated if\n            *None*.\n\n        align : {'top', 'bottom', 'left', 'right', 'center', 'baseline'}, \\\ndefault: 'baseline'\n            Alignment of boxes.\n\n        mode : {'fixed', 'expand', 'equal'}, default: 'fixed'\n            The packing mode.\n\n            - 'fixed' packs the given `.Artist`\\\\s tight with *sep* spacing.\n            - 'expand' uses the maximal available space to distribute the\n              artists with equal spacing in between.\n            - 'equal': Each artist an equal fraction of the available space\n              and is left-aligned (or top-aligned) therein.\n\n        children : list of `.Artist`\n            The artists to pack.\n\n        Notes\n        -----\n        *pad* and *sep* are in points and will be scaled with the renderer\n        dpi, while *width* and *height* are in pixels.\n        \"\"\"\n        super().__init__()\n        self.height = height\n        self.width = width\n        self.sep = sep\n        self.pad = pad\n        self.mode = mode\n        self.align = align\n        self._children = children\n\n\nclass VPacker(PackerBase):\n    \"\"\"\n    VPacker packs its children vertically, automatically adjusting their\n    relative positions at draw time.\n    \"\"\"\n\n    def get_extent_offsets(self, renderer):\n        # docstring inherited\n        dpicor = renderer.points_to_pixels(1.)\n        pad = self.pad * dpicor\n        sep = self.sep * dpicor\n\n        if self.width is not None:\n            for c in self.get_visible_children():\n                if isinstance(c, PackerBase) and c.mode == \"expand\":\n                    c.set_width(self.width)\n\n        whd_list = [c.get_extent(renderer)\n                    for c in self.get_visible_children()]\n        whd_list = [(w, h, xd, (h - yd)) for w, h, xd, yd in whd_list]\n\n        wd_list = [(w, xd) for w, h, xd, yd in whd_list]\n        width, xdescent, xoffsets = _get_aligned_offsets(wd_list,\n                                                         self.width,\n                                                         self.align)\n\n        pack_list = [h for w, h, xd, yd in whd_list]\n        height, yoffsets_ = _get_packed_offsets(pack_list, self.height,\n                                                sep, self.mode)\n\n        yoffsets = yoffsets_ + [yd for w, h, xd, yd in whd_list]\n        ydescent = height - yoffsets[0]\n        yoffsets = height - yoffsets\n\n        yoffsets = yoffsets - ydescent\n\n        return (width + 2 * pad, height + 2 * pad,\n                xdescent + pad, ydescent + pad,\n                list(zip(xoffsets, yoffsets)))\n\n\nclass HPacker(PackerBase):\n    \"\"\"\n    HPacker packs its children horizontally, automatically adjusting their\n    relative positions at draw time.\n    \"\"\"\n\n    def get_extent_offsets(self, renderer):\n        # docstring inherited\n        dpicor = renderer.points_to_pixels(1.)\n        pad = self.pad * dpicor\n        sep = self.sep * dpicor\n\n        whd_list = [c.get_extent(renderer)\n                    for c in self.get_visible_children()]\n\n        if not whd_list:\n            return 2 * pad, 2 * pad, pad, pad, []\n\n        hd_list = [(h, yd) for w, h, xd, yd in whd_list]\n        height, ydescent, yoffsets = _get_aligned_offsets(hd_list,\n                                                          self.height,\n                                                          self.align)\n\n        pack_list = [w for w, h, xd, yd in whd_list]\n        width, xoffsets_ = _get_packed_offsets(pack_list, self.width,\n                                               sep, self.mode)\n\n        xoffsets = xoffsets_ + [xd for w, h, xd, yd in whd_list]\n\n        xdescent = whd_list[0][2]\n        xoffsets = xoffsets - xdescent\n\n        return (width + 2 * pad, height + 2 * pad,\n                xdescent + pad, ydescent + pad,\n                list(zip(xoffsets, yoffsets)))\n\n\nclass PaddedBox(OffsetBox):\n    \"\"\"\n    A container to add a padding around an `.Artist`.\n\n    The `.PaddedBox` contains a `.FancyBboxPatch` that is used to visualize\n    it when rendering.\n    \"\"\"\n\n    @_api.make_keyword_only(\"3.6\", name=\"draw_frame\")\n    def __init__(self, child, pad=None, draw_frame=False, patch_attrs=None):\n        \"\"\"\n        Parameters\n        ----------\n        child : `~matplotlib.artist.Artist`\n            The contained `.Artist`.\n        pad : float\n            The padding in points. This will be scaled with the renderer dpi.\n            In contrast, *width* and *height* are in *pixels* and thus not\n            scaled.\n        draw_frame : bool\n            Whether to draw the contained `.FancyBboxPatch`.\n        patch_attrs : dict or None\n            Additional parameters passed to the contained `.FancyBboxPatch`.\n        \"\"\"\n        super().__init__()\n",
+        "returncode": 0,
+        "timestamp": 1785199933.6241744,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_5GqLLsRp6kvacdAka2V1gO1x",
+      "output": "<returncode>0</returncode>\n<output>\n    def get_extent(self, renderer):\n        \"\"\"Return a tuple ``width, height, xdescent, ydescent`` of the box.\"\"\"\n        w, h, xd, yd, offsets = self.get_extent_offsets(renderer)\n        return w, h, xd, yd\n\n    def get_window_extent(self, renderer=None):\n        # docstring inherited\n        if renderer is None:\n            renderer = self.figure._get_renderer()\n        w, h, xd, yd = self.get_extent(renderer)\n        # Some subclasses redefine get_offset to take no args.\n        try:\n            px, py = self.get_offset(w, h, xd, yd, renderer)\n        except TypeError:\n            px, py = self.get_offset()\n        return mtransforms.Bbox.from_bounds(px - xd, py - yd, w, h)\n\n    def draw(self, renderer):\n        \"\"\"\n        Update the location of children if necessary and draw them\n        to the given *renderer*.\n        \"\"\"\n        w, h, xdescent, ydescent, offsets = self.get_extent_offsets(renderer)\n        px, py = self.get_offset(w, h, xdescent, ydescent, renderer)\n        for c, (ox, oy) in zip(self.get_visible_children(), offsets):\n            c.set_offset((px + ox, py + oy))\n            c.draw(renderer)\n        bbox_artist(self, renderer, fill=False, props=dict(pad=0.))\n        self.stale = False\n\n\nclass PackerBase(OffsetBox):\n    def __init__(self, pad=None, sep=None, width=None, height=None,\n                 align=\"baseline\", mode=\"fixed\", children=None):\n        \"\"\"\n        Parameters\n        ----------\n        pad : float, optional\n            The boundary padding in points.\n\n        sep : float, optional\n            The spacing between items in points.\n\n        width, height : float, optional\n            Width and height of the container box in pixels, calculated if\n            *None*.\n\n        align : {'top', 'bottom', 'left', 'right', 'center', 'baseline'}, \\\ndefault: 'baseline'\n            Alignment of boxes.\n\n        mode : {'fixed', 'expand', 'equal'}, default: 'fixed'\n            The packing mode.\n\n            - 'fixed' packs the given `.Artist`\\\\s tight with *sep* spacing.\n            - 'expand' uses the maximal available space to distribute the\n              artists with equal spacing in between.\n            - 'equal': Each artist an equal fraction of the available space\n              and is left-aligned (or top-aligned) therein.\n\n        children : list of `.Artist`\n            The artists to pack.\n\n        Notes\n        -----\n        *pad* and *sep* are in points and will be scaled with the renderer\n        dpi, while *width* and *height* are in pixels.\n        \"\"\"\n        super().__init__()\n        self.height = height\n        self.width = width\n        self.sep = sep\n        self.pad = pad\n        self.mode = mode\n        self.align = align\n        self._children = children\n\n\nclass VPacker(PackerBase):\n    \"\"\"\n    VPacker packs its children vertically, automatically adjusting their\n    relative positions at draw time.\n    \"\"\"\n\n    def get_extent_offsets(self, renderer):\n        # docstring inherited\n        dpicor = renderer.points_to_pixels(1.)\n        pad = self.pad * dpicor\n        sep = self.sep * dpicor\n\n        if self.width is not None:\n            for c in self.get_visible_children():\n                if isinstance(c, PackerBase) and c.mode == \"expand\":\n                    c.set_width(self.width)\n\n        whd_list = [c.get_extent(renderer)\n                    for c in self.get_visible_children()]\n        whd_list = [(w, h, xd, (h - yd)) for w, h, xd, yd in whd_list]\n\n        wd_list = [(w, xd) for w, h, xd, yd in whd_list]\n        width, xdescent, xoffsets = _get_aligned_offsets(wd_list,\n                                                         self.width,\n                                                         self.align)\n\n        pack_list = [h for w, h, xd, yd in whd_list]\n        height, yoffsets_ = _get_packed_offsets(pack_list, self.height,\n                                                sep, self.mode)\n\n        yoffsets = yoffsets_ + [yd for w, h, xd, yd in whd_list]\n        ydescent = height - yoffsets[0]\n        yoffsets = height - yoffsets\n\n        yoffsets = yoffsets - ydescent\n\n        return (width + 2 * pad, height + 2 * pad,\n                xdescent + pad, ydescent + pad,\n                list(zip(xoffsets, yoffsets)))\n\n\nclass HPacker(PackerBase):\n    \"\"\"\n    HPacker packs its children horizontally, automatically adjusting their\n    relative positions at draw time.\n    \"\"\"\n\n    def get_extent_offsets(self, renderer):\n        # docstring inherited\n        dpicor = renderer.points_to_pixels(1.)\n        pad = self.pad * dpicor\n        sep = self.sep * dpicor\n\n        whd_list = [c.get_extent(renderer)\n                    for c in self.get_visible_children()]\n\n        if not whd_list:\n            return 2 * pad, 2 * pad, pad, pad, []\n\n        hd_list = [(h, yd) for w, h, xd, yd in whd_list]\n        height, ydescent, yoffsets = _get_aligned_offsets(hd_list,\n                                                          self.height,\n                                                          self.align)\n\n        pack_list = [w for w, h, xd, yd in whd_list]\n        width, xoffsets_ = _get_packed_offsets(pack_list, self.width,\n                                               sep, self.mode)\n\n        xoffsets = xoffsets_ + [xd for w, h, xd, yd in whd_list]\n\n        xdescent = whd_list[0][2]\n        xoffsets = xoffsets - xdescent\n\n        return (width + 2 * pad, height + 2 * pad,\n                xdescent + pad, ydescent + pad,\n                list(zip(xoffsets, yoffsets)))\n\n\nclass PaddedBox(OffsetBox):\n    \"\"\"\n    A container to add a padding around an `.Artist`.\n\n    The `.PaddedBox` contains a `.FancyBboxPatch` that is used to visualize\n    it when rendering.\n    \"\"\"\n\n    @_api.make_keyword_only(\"3.6\", name=\"draw_frame\")\n    def __init__(self, child, pad=None, draw_frame=False, patch_attrs=None):\n        \"\"\"\n        Parameters\n        ----------\n        child : `~matplotlib.artist.Artist`\n            The contained `.Artist`.\n        pad : float\n            The padding in points. This will be scaled with the renderer dpi.\n            In contrast, *width* and *height* are in *pixels* and thus not\n            scaled.\n        draw_frame : bool\n            Whether to draw the contained `.FancyBboxPatch`.\n        patch_attrs : dict or None\n            Additional parameters passed to the contained `.FancyBboxPatch`.\n        \"\"\"\n        super().__init__()\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGEwZTU2OTMwZTdlZjM0YzAwNmE2N2ZkM2RkZjFjODE5NTg3OTRjMjFmMjRmMDQwOTg=",
+      "created_at": 1785199933,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a0e56930e7ef34c006a67fd3e87508195a7e1f5564932f0d2",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_1AjovSrhLrgh7hiKpeVCaDowIl4wwBuM6y3tfHKdx0V9IyM-s1akfSBmAmccGSMAaV_J273Boc3aKRuYbwi7epGNYLCoY9nuHI8XNRAtsBki5o87dd0YUrkNl3GjzUUxRJKnI6UGEpPQ7RfeHmiTclegartt42EGYbnf2eeaX9VeDilCYS7mgVJs1e-5NM0clo7vsMr02z66UE4Z35qChibTSIBY-MW96BhEPCYvnDgyUy4wxxyF2jFyD0snAmB14GquBNcy0WNfvX9eDVHJptVEw5ZE26mZnc4KwG7CDKYNLDXGYT3jYJxb5nYAH9L-MT6b1XpfoDqou-9_63xjekbhs0dY7c4pdP_RZdDdqWY9Wa2bkXZcezspD5Yywoij2CO88nJfdHvPnxCZBA_WGsrxOuXS3FEsElT1n4GEaCERtTpV4ccMoPdMd3n0GB0wtbrLjoh5EOWBmRSxPprn_1V2zKM9GQuxIZF2451aEb0YCSoHgJ2aFXX1O7A1OaQ6SgILuBlzXJ5duN-st6pno41oexiaOX4xRDbGlBPuYvCpjrVs_1zQKkSgAgh2vaZztJKPtSGbZXErCPhUWSJoyzxPiMSGzaReJSaPB2FRq-3HhVcAH0Ltj0lMGC0uIBP19rHdiJ-ft0C0JOFYDEIAmUi8BMRSkWkmU9CEyxQUjvSEqqrnIY5D3CXfg8Ajka5LHCK8h6T6u583t92CS7JfPadwTdG4GLyJuZaSzoNNb0gnNk_rEM8eWfzjkDmQqGFyoxos8RikJOWNbeSSqJQuXmUuV3mQK9vgA2BHi4gJqiWCMj-x-j_xvGMp5CbggRRxSy2-kao0tYiv4l_SG8vy5q1dq4QCBg7zwQieJ7bezYlguvC4UrLKpOgxCtMZl1kMoShITMMzjEXEfrLxqArZeN0kz2FFZLTBuK3Or90qx6Pc28E8Rgesk2JWUDhyF1FOpaOuU1uKU9myQfQ_6EMTNF66x2nkRuZGtJtQV0WvxELzNoVk6ya_jVyd3nh8MTMByQZnjC-d1fZvYxk8OlyEmMlRxQnjYuLixd4IZ6t9Eom2SQhtUht0Od5gLcV27hZWAOTPQO-PFwXrxUbj6-WzGvT_dtzZFfMEWXMsnjnj2Uaia9tIS9vvyRuBaCeOzQEOn32Lza4HzEVG9P4MKMBF_La-rh-lxBJ92wc8piStUj3os="
+        },
+        {
+          "id": "msg_0a0e56930e7ef34c006a67fd3f72f48195a8e1e6f6e04b8cc3",
+          "content": [
+            {
+              "annotations": [],
+              "text": "I found the core alignment code; now I\u2019ll check existing tests/docs for intended `HPacker` `align` semantics and any prior fixes.\n\n",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && grep -RIn \\\"HPacker(.*align\\\\|align='top'\\\\|align=\\\\\\\"top\\\\\\\"\\\\|align='bottom'\\\\|align=\\\\\\\"bottom\\\\\\\"\\\" lib/matplotlib tests doc | head -n 120\"}",
+          "call_id": "call_aUHDFtDJ25ECm5tUdk3C04li",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a0e56930e7ef34c006a67fd3fdad08195aad13acc9224e114",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 5305,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 3584,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 152,
+        "output_tokens_details": {
+          "reasoning_tokens": 39,
+          "text_tokens": null
+        },
+        "total_tokens": 5457,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785199936,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && grep -RIn \"HPacker(.*align\\|align='top'\\|align=\\\"top\\\"\\|align='bottom'\\|align=\\\"bottom\\\"\" lib/matplotlib tests doc | head -n 120",
+            "tool_call_id": "call_aUHDFtDJ25ECm5tUdk3C04li"
+          }
+        ],
+        "cost": 0.00576695,
+        "timestamp": 1785199936.4905078
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "grep: tests: No such file or directory\n",
+        "returncode": 0,
+        "timestamp": 1785199937.294464,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_aUHDFtDJ25ECm5tUdk3C04li",
+      "output": "<returncode>0</returncode>\n<output>\ngrep: tests: No such file or directory\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGEwZTU2OTMwZTdlZjM0YzAwNmE2N2ZkNDE4NWUwODE5NTllNzEwZTUwY2MyM2UwMjM=",
+      "created_at": 1785199937,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a0e56930e7ef34c006a67fd41ed088195b31909be36746f0a",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_1D6sB_LIQSaj2Hoj_0co_eO4JhtViibZYKCXt7z-yHkISK6kdE7cXYHkk04c7AYLSsPKYIdmy-wlgzaStOdaUasyP8qNTZ6iU2TPxfJpBDlaLpXTbGKJ4jY3ZiSc1VXUI1MLU_aWnfQxPNZZHM4X9v7rVZCaRDDX7b7oYArcVK14DXx9tl6XJgct4I9C8MVh2vrkYKpC0JOEI-axuKiWiaKZl3VepuA5e_Dx3SOcLJLgrfC13akVrwFvRn4GlYdVRd9QKeumx39OSYXpqRDZnAI4LrwQCm5Wi9gMuCIxcTiIW35f9ZDRXMOau0XLAuoZB6wMKI_OscYiau2qRwU81XkmgYoWkLPLQJM0xBhadYxvWNQP6hJ7phUGW3YC_EHxQSZHINqye-YZP3ExMDJ-NGUVBz9hg2UcaRITno2tXxY6dXINBSCB21_JVAgRmbojzJjzX2kp9X_d_wOgW-LQtnf1NAheChWv9Mmzrv2gjt2OFw7_tCL9X_TyJDJC-Ah7HQMKTLNFJVqgwsoSMfAK2-fDrsww6vPsNF9oMPl65oZ6sKdOYuEu0LQDcPm_PpSm0byvbcSVKU0LfP7ifwEMFyFMWKkdK4pxBjYFG9TJnbijVP5BXsl-FoEMao0SDcJHB2Ab-tb1MtiXPCO5EeSKH2yDGoKCTUeRIZHEcWYty6G1rlDzopCDwMWERKDhhqrtbEVV80ZGNZAaiJBKDyn8ZMxDzVJczPuaC3fp1nU92y2lAUQPiOOBoHHlmyWAdr_aVPZJmg837fNBP_BWwk3r4aKG2UGFmx5Y_UBLx1tmcu3I7tZDcIy5U61aabhoQNamnjwJnu2CrmnP0Oc5fQMUtdsRFBcSYCVhUItFJ1-UOKKXhMt5XABDfbzz6Rj9czZq0yklmEaghbDmuDxP7tDUG9U2k00xeTpGOEh6XVt3zvyji4Bwu_vaRNTKmuHShUcrsxbs_3JpKB91OQOaD7wYoAjlwhn3DJ3SE8cEu8WH9_s5w12Ek-ITkP_4VxUK-GkXb8dOJ3JMihoDyC5LsNTLBYIDNnjV4yNem_n55wg0QfEkCEUcu6X0mdVIKhsMxcdMKqeUNRx_L8a8lmJ4dHFn5CMA=="
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && grep -RIn \\\"HPacker\\\\|VPacker\\\\|offsetbox\\\" lib/matplotlib/tests doc | head -n 200\"}",
+          "call_id": "call_lgfgeslBsTwGDY52BuZnvTh6",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a0e56930e7ef34c006a67fd4265e481959e2aa3bf0066de7e",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 5493,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 4608,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 87,
+        "output_tokens_details": {
+          "reasoning_tokens": 35,
+          "text_tokens": null
+        },
+        "total_tokens": 5580,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785199938,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && grep -RIn \"HPacker\\|VPacker\\|offsetbox\" lib/matplotlib/tests doc | head -n 200",
+            "tool_call_id": "call_lgfgeslBsTwGDY52BuZnvTh6"
+          }
+        ],
+        "cost": 0.0035731499999999998,
+        "timestamp": 1785199939.0837855
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "lib/matplotlib/tests/test_legend.py:145:    # using subplot triggers some offsetbox functionality untested elsewhere\nlib/matplotlib/tests/test_legend.py:166:    # using subplot triggers some offsetbox functionality untested elsewhere\nlib/matplotlib/tests/test_tightlayout.py:10:from matplotlib.offsetbox import AnchoredOffsetbox, DrawingArea\nlib/matplotlib/tests/test_tightlayout.py:185:def add_offsetboxes(ax, size=10, margin=.1, color='black'):\nlib/matplotlib/tests/test_tightlayout.py:215:@image_comparison(['tight_layout_offsetboxes1', 'tight_layout_offsetboxes2'])\nlib/matplotlib/tests/test_tightlayout.py:216:def test_tight_layout_offsetboxes():\nlib/matplotlib/tests/test_tightlayout.py:238:            add_offsetboxes(ax, 20, color=color)\nlib/matplotlib/tests/test_backend_svg.py:219:    from matplotlib.offsetbox import OffsetBox\nlib/matplotlib/tests/test_offsetbox.py:14:from matplotlib.offsetbox import (\nlib/matplotlib/tests/test_offsetbox.py:19:@image_comparison(['offsetbox_clipping'], remove_text=True)\nlib/matplotlib/tests/test_offsetbox.py:20:def test_offsetbox_clipping():\nlib/matplotlib/tests/test_offsetbox.py:54:def test_offsetbox_clip_children():\nlib/matplotlib/tests/test_offsetbox.py:91:def test_offsetbox_loc_codes():\ndoc/missing-references.json:401:      \"lib/matplotlib/offsetbox.py:docstring of matplotlib.offsetbox.AnnotationBbox:1\",\ndoc/api/index.rst:132:   offsetbox_api.rst\ndoc/api/prev_api_changes/api_changes_3.4.0/deprecations.rst:118:`.offsetbox.TextArea` has behaved as if *minimumdescent* was always True\ndoc/api/prev_api_changes/api_changes_3.1.0.rst:1151:`.offsetbox.AnchoredText` is unable to handle the *horizontalalignment* or\ndoc/api/offsetbox_api.rst:2:``matplotlib.offsetbox``\ndoc/api/offsetbox_api.rst:5:.. inheritance-diagram:: matplotlib.offsetbox\ndoc/api/offsetbox_api.rst:8:.. automodule:: matplotlib.offsetbox\ndoc/api/artist_api.rst:14:.. inheritance-diagram:: matplotlib.axes._axes.Axes matplotlib.axes._base._AxesBase matplotlib.axis.Axis matplotlib.axis.Tick matplotlib.axis.XAxis matplotlib.axis.XTick matplotlib.axis.YAxis matplotlib.axis.YTick matplotlib.collections.AsteriskPolygonCollection matplotlib.collections.BrokenBarHCollection matplotlib.collections.CircleCollection matplotlib.collections.Collection matplotlib.collections.EllipseCollection matplotlib.collections.EventCollection matplotlib.collections.LineCollection matplotlib.collections.PatchCollection matplotlib.collections.PathCollection matplotlib.collections.PolyCollection matplotlib.collections.QuadMesh matplotlib.collections.RegularPolyCollection matplotlib.collections.StarPolygonCollection matplotlib.collections.TriMesh matplotlib.collections._CollectionWithSizes matplotlib.contour.ClabelText matplotlib.figure.Figure matplotlib.image.AxesImage matplotlib.image.BboxImage matplotlib.image.FigureImage matplotlib.image.NonUniformImage matplotlib.image.PcolorImage matplotlib.image._ImageBase matplotlib.legend.Legend matplotlib.lines.Line2D matplotlib.offsetbox.AnchoredOffsetbox matplotlib.offsetbox.AnchoredText matplotlib.offsetbox.AnnotationBbox matplotlib.offsetbox.AuxTransformBox matplotlib.offsetbox.DrawingArea matplotlib.offsetbox.HPacker matplotlib.offsetbox.OffsetBox matplotlib.offsetbox.OffsetImage matplotlib.offsetbox.PackerBase matplotlib.offsetbox.PaddedBox matplotlib.offsetbox.TextArea matplotlib.offsetbox.VPacker matplotlib.patches.Arc matplotlib.patches.Arrow matplotlib.patches.Circle matplotlib.patches.CirclePolygon matplotlib.patches.ConnectionPatch matplotlib.patches.Ellipse matplotlib.patches.FancyArrow matplotlib.patches.FancyArrowPatch matplotlib.patches.FancyBboxPatch matplotlib.patches.Patch matplotlib.patches.PathPatch matplotlib.patches.StepPatch matplotlib.patches.Polygon matplotlib.patches.Rectangle matplotlib.patches.RegularPolygon matplotlib.patches.Shadow matplotlib.patches.Wedge matplotlib.projections.geo.AitoffAxes matplotlib.projections.geo.GeoAxes matplotlib.projections.geo.HammerAxes matplotlib.projections.geo.LambertAxes matplotlib.projections.geo.MollweideAxes matplotlib.projections.polar.PolarAxes matplotlib.quiver.Barbs matplotlib.quiver.Quiver matplotlib.quiver.QuiverKey matplotlib.spines.Spine matplotlib.table.Cell matplotlib.table.CustomCell matplotlib.table.Table matplotlib.text.Annotation matplotlib.text.Text\ndoc/users/prev_whats_new/github_stats_3.2.0.rst:555:* :ghpull:`15071`: Cleanup offsetbox.py.\ndoc/users/prev_whats_new/github_stats_3.2.0.rst:614:* :ghpull:`14926`: Save a matrix unpacking/repacking in offsetbox.\ndoc/users/prev_whats_new/github_stats_3.0.1.rst:88:* :ghpull:`12475`: Backport PR #12469 on branch v3.0.x (Clarify documentation of offsetbox.AnchoredText's prop kw argument)\ndoc/users/prev_whats_new/github_stats_3.4.0.rst:517:* :ghpull:`19012`: Common ``__init__`` for VPacker and HPacker.\ndoc/users/prev_whats_new/whats_new_3.4.0.rst:739:    from matplotlib.offsetbox import AnchoredText\ndoc/users/prev_whats_new/whats_new_1.5.rst:550:through `~.offsetbox.DrawingArea` and `~.offsetbox.TextArea`.\ndoc/users/prev_whats_new/github_stats_3.5.0.rst:738:* :ghpull:`20524`: Dedupe some box anchoring code between legend.py and offsetbox.py.\ndoc/users/prev_whats_new/github_stats_3.5.0.rst:984:* :ghpull:`20051`: Remove offsetbox APIs deprecated in Matplotlib 3.3.\ndoc/users/prev_whats_new/github_stats_3.0.2.rst:178:* :ghpull:`12469`: Clarify documentation of offsetbox.AnchoredText's prop kw argument\ndoc/users/prev_whats_new/github_stats_3.3.0.rst:987:* :ghpull:`16085`: Improve docstrings in offsetbox.py\ndoc/users/prev_whats_new/changelog.rst:1385:    Added a support for bbox_to_anchor in offsetbox.AnchoredOffsetbox. Improved\ndoc/users/prev_whats_new/changelog.rst:1389:    Fixed a offsetbox bug that multiline texts are not correctly aligned.  -\ndoc/users/prev_whats_new/changelog.rst:1424:    Add AuxTransformBox in offsetbox.py to support some transformation.\n",
+        "returncode": 0,
+        "timestamp": 1785199939.2448142,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_lgfgeslBsTwGDY52BuZnvTh6",
+      "output": "<returncode>0</returncode>\n<output>\nlib/matplotlib/tests/test_legend.py:145:    # using subplot triggers some offsetbox functionality untested elsewhere\nlib/matplotlib/tests/test_legend.py:166:    # using subplot triggers some offsetbox functionality untested elsewhere\nlib/matplotlib/tests/test_tightlayout.py:10:from matplotlib.offsetbox import AnchoredOffsetbox, DrawingArea\nlib/matplotlib/tests/test_tightlayout.py:185:def add_offsetboxes(ax, size=10, margin=.1, color='black'):\nlib/matplotlib/tests/test_tightlayout.py:215:@image_comparison(['tight_layout_offsetboxes1', 'tight_layout_offsetboxes2'])\nlib/matplotlib/tests/test_tightlayout.py:216:def test_tight_layout_offsetboxes():\nlib/matplotlib/tests/test_tightlayout.py:238:            add_offsetboxes(ax, 20, color=color)\nlib/matplotlib/tests/test_backend_svg.py:219:    from matplotlib.offsetbox import OffsetBox\nlib/matplotlib/tests/test_offsetbox.py:14:from matplotlib.offsetbox import (\nlib/matplotlib/tests/test_offsetbox.py:19:@image_comparison(['offsetbox_clipping'], remove_text=True)\nlib/matplotlib/tests/test_offsetbox.py:20:def test_offsetbox_clipping():\nlib/matplotlib/tests/test_offsetbox.py:54:def test_offsetbox_clip_children():\nlib/matplotlib/tests/test_offsetbox.py:91:def test_offsetbox_loc_codes():\ndoc/missing-references.json:401:      \"lib/matplotlib/offsetbox.py:docstring of matplotlib.offsetbox.AnnotationBbox:1\",\ndoc/api/index.rst:132:   offsetbox_api.rst\ndoc/api/prev_api_changes/api_changes_3.4.0/deprecations.rst:118:`.offsetbox.TextArea` has behaved as if *minimumdescent* was always True\ndoc/api/prev_api_changes/api_changes_3.1.0.rst:1151:`.offsetbox.AnchoredText` is unable to handle the *horizontalalignment* or\ndoc/api/offsetbox_api.rst:2:``matplotlib.offsetbox``\ndoc/api/offsetbox_api.rst:5:.. inheritance-diagram:: matplotlib.offsetbox\ndoc/api/offsetbox_api.rst:8:.. automodule:: matplotlib.offsetbox\ndoc/api/artist_api.rst:14:.. inheritance-diagram:: matplotlib.axes._axes.Axes matplotlib.axes._base._AxesBase matplotlib.axis.Axis matplotlib.axis.Tick matplotlib.axis.XAxis matplotlib.axis.XTick matplotlib.axis.YAxis matplotlib.axis.YTick matplotlib.collections.AsteriskPolygonCollection matplotlib.collections.BrokenBarHCollection matplotlib.collections.CircleCollection matplotlib.collections.Collection matplotlib.collections.EllipseCollection matplotlib.collections.EventCollection matplotlib.collections.LineCollection matplotlib.collections.PatchCollection matplotlib.collections.PathCollection matplotlib.collections.PolyCollection matplotlib.collections.QuadMesh matplotlib.collections.RegularPolyCollection matplotlib.collections.StarPolygonCollection matplotlib.collections.TriMesh matplotlib.collections._CollectionWithSizes matplotlib.contour.ClabelText matplotlib.figure.Figure matplotlib.image.AxesImage matplotlib.image.BboxImage matplotlib.image.FigureImage matplotlib.image.NonUniformImage matplotlib.image.PcolorImage matplotlib.image._ImageBase matplotlib.legend.Legend matplotlib.lines.Line2D matplotlib.offsetbox.AnchoredOffsetbox matplotlib.offsetbox.AnchoredText matplotlib.offsetbox.AnnotationBbox matplotlib.offsetbox.AuxTransformBox matplotlib.offsetbox.DrawingArea matplotlib.offsetbox.HPacker matplotlib.offsetbox.OffsetBox matplotlib.offsetbox.OffsetImage matplotlib.offsetbox.PackerBase matplotlib.offsetbox.PaddedBox matplotlib.offsetbox.TextArea matplotlib.offsetbox.VPacker matplotlib.patches.Arc matplotlib.patches.Arrow matplotlib.patches.Circle matplotlib.patches.CirclePolygon matplotlib.patches.ConnectionPatch matplotlib.patches.Ellipse matplotlib.patches.FancyArrow matplotlib.patches.FancyArrowPatch matplotlib.patches.FancyBboxPatch matplotlib.patches.Patch matplotlib.patches.PathPatch matplotlib.patches.StepPatch matplotlib.patches.Polygon matplotlib.patches.Rectangle matplotlib.patches.RegularPolygon matplotlib.patches.Shadow matplotlib.patches.Wedge matplotlib.projections.geo.AitoffAxes matplotlib.projections.geo.GeoAxes matplotlib.projections.geo.HammerAxes matplotlib.projections.geo.LambertAxes matplotlib.projections.geo.MollweideAxes matplotlib.projections.polar.PolarAxes matplotlib.quiver.Barbs matplotlib.quiver.Quiver matplotlib.quiver.QuiverKey matplotlib.spines.Spine matplotlib.table.Cell matplotlib.table.CustomCell matplotlib.table.Table matplotlib.text.Annotation matplotlib.text.Text\ndoc/users/prev_whats_new/github_stats_3.2.0.rst:555:* :ghpull:`15071`: Cleanup offsetbox.py.\ndoc/users/prev_whats_new/github_stats_3.2.0.rst:614:* :ghpull:`14926`: Save a matrix unpacking/repacking in offsetbox.\ndoc/users/prev_whats_new/github_stats_3.0.1.rst:88:* :ghpull:`12475`: Backport PR #12469 on branch v3.0.x (Clarify documentation of offsetbox.AnchoredText's prop kw argument)\ndoc/users/prev_whats_new/github_stats_3.4.0.rst:517:* :ghpull:`19012`: Common ``__init__`` for VPacker and HPacker.\ndoc/users/prev_whats_new/whats_new_3.4.0.rst:739:    from matplotlib.offsetbox import AnchoredText\ndoc/users/prev_whats_new/whats_new_1.5.rst:550:through `~.offsetbox.DrawingArea` and `~.offsetbox.TextArea`.\ndoc/users/prev_whats_new/github_stats_3.5.0.rst:738:* :ghpull:`20524`: Dedupe some box anchoring code between legend.py and offsetbox.py.\ndoc/users/prev_whats_new/github_stats_3.5.0.rst:984:* :ghpull:`20051`: Remove offsetbox APIs deprecated in Matplotlib 3.3.\ndoc/users/prev_whats_new/github_stats_3.0.2.rst:178:* :ghpull:`12469`: Clarify documentation of offsetbox.AnchoredText's prop kw argument\ndoc/users/prev_whats_new/github_stats_3.3.0.rst:987:* :ghpull:`16085`: Improve docstrings in offsetbox.py\ndoc/users/prev_whats_new/changelog.rst:1385:    Added a support for bbox_to_anchor in offsetbox.AnchoredOffsetbox. Improved\ndoc/users/prev_whats_new/changelog.rst:1389:    Fixed a offsetbox bug that multiline texts are not correctly aligned.  -\ndoc/users/prev_whats_new/changelog.rst:1424:    Add AuxTransformBox in offsetbox.py to support some transformation.\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGEwZTU2OTMwZTdlZjM0YzAwNmE2N2ZkNDM3ZmM4ODE5NTk2NTI5NjZkYzJmMDc4OWE=",
+      "created_at": 1785199939,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a0e56930e7ef34c006a67fd4413fc8195b561fd9fa7ceba66",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_1FPTD9yXilPWFdK6P-lh1K1W7PUhxyH7jz0ozuwvsKzZ-uJ4psGxAtTL1aPucfzqcxwZ809-4tGZPrWpzjHknC5YfUFi-sPOUDWui-S_OjbjqZ_DxRykknpiTImVrbLHrCddjmANmCKWBXzt58zzmGaZWSdxkIfhgBXVHhrd_2KfFJIVblH6RZjrlMOU-eK73-ajOvBJGi2efs6usLJU3qePgqa5UPZFwAfoDyNFqmjBnLLMzqqm9vMwWABQBUKUWMicQGO-G7cgjxu-qhFS0btmAsGriH7wuz87shYifa52oM1QP1SD9sUtHCg7lXXyp7ognFhqayLNR4EUGP-i1fhpF09lbBoEVlyzdMpAVddExcJbfGL0j7w57Y3bM1SLYhVJ4EcuFglq4v7lec-bdPvJZyT6J27ZANZnxZ4LTlfCNpjG8npUm9QZkD_mmTEkJ2deqeBg3i3Attc_pp3pignNVngZRM3tItCcgNCG8CAWWkcxI5NH7NqP2fFCzUXz2vcAtplxAGiC4F5EFaKbWCUr1cVRckC67QEKYkXZScXQyeiIXqfjR0Q66JH161mI7PXC_p7tncF8ly6fz7u7vccWFSZxhr-e23_vVOJOZ12lBmYigKFn_EhJDQyi9WrR_N-XV0RU-ceMqKLtl4WW64WcUl9JtUrnD2SVqOxznsV4wXRCxcVBCgT3r5IKjh1VTTsEdnGBdrcCK3MlKUts5BE912R3JhsAFgBm9tqPG9hUMpX0ARtpjjpIoD8fC75vXp5_FTrdw2yjqTwLlZnfu0uv7RTrnj-_sNMQn5LVRAM86HbCny70M9JPTdF_171kw9RtlKX3_g6vRk1EC2Igsum4PEQFT68-q5gqtzy62OhLWbse-NqpryHlDnu7VZwg3dcJiV4JmNGxzP2CfQ3G8xXKADJjKFxrLTiVUHP-mv_Hk-Yyse8KrlC_Pi3oskMwc85YUgpadk3MGdZ7kYPoz_pfvs9muJEwtLA_giiRkqHzE="
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '1,260p' lib/matplotlib/tests/test_offsetbox.py\"}",
+          "call_id": "call_OZ2mYZUKkfctVIhhK10B2yTi",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a0e56930e7ef34c006a67fd4461dc81959170eeb594bf0602",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 6999,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 4608,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 55,
+        "output_tokens_details": {
+          "reasoning_tokens": 13,
+          "text_tokens": null
+        },
+        "total_tokens": 7054,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785199941,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '1,260p' lib/matplotlib/tests/test_offsetbox.py",
+            "tool_call_id": "call_OZ2mYZUKkfctVIhhK10B2yTi"
+          }
+        ],
+        "cost": 0.005760649999999999,
+        "timestamp": 1785199941.2745326
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "from collections import namedtuple\nimport io\n\nimport numpy as np\nfrom numpy.testing import assert_allclose\nimport pytest\n\nfrom matplotlib.testing.decorators import image_comparison\nimport matplotlib.pyplot as plt\nimport matplotlib.patches as mpatches\nimport matplotlib.lines as mlines\nfrom matplotlib.backend_bases import MouseButton, MouseEvent\n\nfrom matplotlib.offsetbox import (\n    AnchoredOffsetbox, AnnotationBbox, AnchoredText, DrawingArea, OffsetBox,\n    OffsetImage, TextArea, _get_packed_offsets)\n\n\n@image_comparison(['offsetbox_clipping'], remove_text=True)\ndef test_offsetbox_clipping():\n    # - create a plot\n    # - put an AnchoredOffsetbox with a child DrawingArea\n    #   at the center of the axes\n    # - give the DrawingArea a gray background\n    # - put a black line across the bounds of the DrawingArea\n    # - see that the black line is clipped to the edges of\n    #   the DrawingArea.\n    fig, ax = plt.subplots()\n    size = 100\n    da = DrawingArea(size, size, clip=True)\n    bg = mpatches.Rectangle((0, 0), size, size,\n                            facecolor='#CCCCCC',\n                            edgecolor='None',\n                            linewidth=0)\n    line = mlines.Line2D([-size*.5, size*1.5], [size/2, size/2],\n                         color='black',\n                         linewidth=10)\n    anchored_box = AnchoredOffsetbox(\n        loc='center',\n        child=da,\n        pad=0.,\n        frameon=False,\n        bbox_to_anchor=(.5, .5),\n        bbox_transform=ax.transAxes,\n        borderpad=0.)\n\n    da.add_artist(bg)\n    da.add_artist(line)\n    ax.add_artist(anchored_box)\n    ax.set_xlim((0, 1))\n    ax.set_ylim((0, 1))\n\n\ndef test_offsetbox_clip_children():\n    # - create a plot\n    # - put an AnchoredOffsetbox with a child DrawingArea\n    #   at the center of the axes\n    # - give the DrawingArea a gray background\n    # - put a black line across the bounds of the DrawingArea\n    # - see that the black line is clipped to the edges of\n    #   the DrawingArea.\n    fig, ax = plt.subplots()\n    size = 100\n    da = DrawingArea(size, size, clip=True)\n    bg = mpatches.Rectangle((0, 0), size, size,\n                            facecolor='#CCCCCC',\n                            edgecolor='None',\n                            linewidth=0)\n    line = mlines.Line2D([-size*.5, size*1.5], [size/2, size/2],\n                         color='black',\n                         linewidth=10)\n    anchored_box = AnchoredOffsetbox(\n        loc='center',\n        child=da,\n        pad=0.,\n        frameon=False,\n        bbox_to_anchor=(.5, .5),\n        bbox_transform=ax.transAxes,\n        borderpad=0.)\n\n    da.add_artist(bg)\n    da.add_artist(line)\n    ax.add_artist(anchored_box)\n\n    fig.canvas.draw()\n    assert not fig.stale\n    da.clip_children = True\n    assert fig.stale\n\n\ndef test_offsetbox_loc_codes():\n    # Check that valid string location codes all work with an AnchoredOffsetbox\n    codes = {'upper right': 1,\n             'upper left': 2,\n             'lower left': 3,\n             'lower right': 4,\n             'right': 5,\n             'center left': 6,\n             'center right': 7,\n             'lower center': 8,\n             'upper center': 9,\n             'center': 10,\n             }\n    fig, ax = plt.subplots()\n    da = DrawingArea(100, 100)\n    for code in codes:\n        anchored_box = AnchoredOffsetbox(loc=code, child=da)\n        ax.add_artist(anchored_box)\n    fig.canvas.draw()\n\n\ndef test_expand_with_tight_layout():\n    # Check issue reported in #10476, and updated due to #10784\n    fig, ax = plt.subplots()\n\n    d1 = [1, 2]\n    d2 = [2, 1]\n    ax.plot(d1, label='series 1')\n    ax.plot(d2, label='series 2')\n    ax.legend(ncols=2, mode='expand')\n\n    fig.tight_layout()  # where the crash used to happen\n\n\n@pytest.mark.parametrize('widths',\n                         ([150], [150, 150, 150], [0.1], [0.1, 0.1]))\n@pytest.mark.parametrize('total', (250, 100, 0, -1, None))\n@pytest.mark.parametrize('sep', (250, 1, 0, -1))\n@pytest.mark.parametrize('mode', (\"expand\", \"fixed\", \"equal\"))\ndef test_get_packed_offsets(widths, total, sep, mode):\n    # Check a (rather arbitrary) set of parameters due to successive similar\n    # issue tickets (at least #10476 and #10784) related to corner cases\n    # triggered inside this function when calling higher-level functions\n    # (e.g. `Axes.legend`).\n    # These are just some additional smoke tests. The output is untested.\n    _get_packed_offsets(widths, total, sep, mode=mode)\n\n\n_Params = namedtuple('_params', 'wd_list, total, sep, expected')\n\n\n@pytest.mark.parametrize('widths, total, sep, expected', [\n    _Params(  # total=None\n        [3, 1, 2], total=None, sep=1, expected=(8, [0, 4, 6])),\n    _Params(  # total larger than required\n        [3, 1, 2], total=10, sep=1, expected=(10, [0, 4, 6])),\n    _Params(  # total smaller than required\n        [3, 1, 2], total=5, sep=1, expected=(5, [0, 4, 6])),\n])\ndef test_get_packed_offsets_fixed(widths, total, sep, expected):\n    result = _get_packed_offsets(widths, total, sep, mode='fixed')\n    assert result[0] == expected[0]\n    assert_allclose(result[1], expected[1])\n\n\n@pytest.mark.parametrize('widths, total, sep, expected', [\n    _Params(  # total=None (implicit 1)\n        [.1, .1, .1], total=None, sep=None, expected=(1, [0, .45, .9])),\n    _Params(  # total larger than sum of widths\n        [3, 1, 2], total=10, sep=1, expected=(10, [0, 5, 8])),\n    _Params(  # total smaller sum of widths: overlapping boxes\n        [3, 1, 2], total=5, sep=1, expected=(5, [0, 2.5, 3])),\n])\ndef test_get_packed_offsets_expand(widths, total, sep, expected):\n    result = _get_packed_offsets(widths, total, sep, mode='expand')\n    assert result[0] == expected[0]\n    assert_allclose(result[1], expected[1])\n\n\n@pytest.mark.parametrize('widths, total, sep, expected', [\n    _Params(  # total larger than required\n        [3, 2, 1], total=6, sep=None, expected=(6, [0, 2, 4])),\n    _Params(  # total smaller sum of widths: overlapping boxes\n        [3, 2, 1, .5], total=2, sep=None, expected=(2, [0, 0.5, 1, 1.5])),\n    _Params(  # total larger than required\n        [.5, 1, .2], total=None, sep=1, expected=(6, [0, 2, 4])),\n    # the case total=None, sep=None is tested separately below\n])\ndef test_get_packed_offsets_equal(widths, total, sep, expected):\n    result = _get_packed_offsets(widths, total, sep, mode='equal')\n    assert result[0] == expected[0]\n    assert_allclose(result[1], expected[1])\n\n\ndef test_get_packed_offsets_equal_total_none_sep_none():\n    with pytest.raises(ValueError):\n        _get_packed_offsets([1, 1, 1], total=None, sep=None, mode='equal')\n\n\n@pytest.mark.parametrize('child_type', ['draw', 'image', 'text'])\n@pytest.mark.parametrize('boxcoords',\n                         ['axes fraction', 'axes pixels', 'axes points',\n                          'data'])\ndef test_picking(child_type, boxcoords):\n    # These all take up approximately the same area.\n    if child_type == 'draw':\n        picking_child = DrawingArea(5, 5)\n        picking_child.add_artist(mpatches.Rectangle((0, 0), 5, 5, linewidth=0))\n    elif child_type == 'image':\n        im = np.ones((5, 5))\n        im[2, 2] = 0\n        picking_child = OffsetImage(im)\n    elif child_type == 'text':\n        picking_child = TextArea('\\N{Black Square}', textprops={'fontsize': 5})\n    else:\n        assert False, f'Unknown picking child type {child_type}'\n\n    fig, ax = plt.subplots()\n    ab = AnnotationBbox(picking_child, (0.5, 0.5), boxcoords=boxcoords)\n    ab.set_picker(True)\n    ax.add_artist(ab)\n\n    calls = []\n    fig.canvas.mpl_connect('pick_event', lambda event: calls.append(event))\n\n    # Annotation should be picked by an event occurring at its center.\n    if boxcoords == 'axes points':\n        x, y = ax.transAxes.transform_point((0, 0))\n        x += 0.5 * fig.dpi / 72\n        y += 0.5 * fig.dpi / 72\n    elif boxcoords == 'axes pixels':\n        x, y = ax.transAxes.transform_point((0, 0))\n        x += 0.5\n        y += 0.5\n    else:\n        x, y = ax.transAxes.transform_point((0.5, 0.5))\n    fig.canvas.draw()\n    calls.clear()\n    MouseEvent(\n        \"button_press_event\", fig.canvas, x, y, MouseButton.LEFT)._process()\n    assert len(calls) == 1 and calls[0].artist == ab\n\n    # Annotation should *not* be picked by an event at its original center\n    # point when the limits have changed enough to hide the *xy* point.\n    ax.set_xlim(-1, 0)\n    ax.set_ylim(-1, 0)\n    fig.canvas.draw()\n    calls.clear()\n    MouseEvent(\n        \"button_press_event\", fig.canvas, x, y, MouseButton.LEFT)._process()\n    assert len(calls) == 0\n\n\n@image_comparison(['anchoredtext_align.png'], remove_text=True, style='mpl20')\ndef test_anchoredtext_horizontal_alignment():\n    fig, ax = plt.subplots()\n\n    text0 = AnchoredText(\"test\\ntest long text\", loc=\"center left\",\n                         pad=0.2, prop={\"ha\": \"left\"})\n    ax.add_artist(text0)\n    text1 = AnchoredText(\"test\\ntest long text\", loc=\"center\",\n                         pad=0.2, prop={\"ha\": \"center\"})\n    ax.add_artist(text1)\n    text2 = AnchoredText(\"test\\ntest long text\", loc=\"center right\",\n                         pad=0.2, prop={\"ha\": \"right\"})\n    ax.add_artist(text2)\n\n\ndef test_annotationbbox_extents():\n    plt.rcParams.update(plt.rcParamsDefault)\n",
+        "returncode": 0,
+        "timestamp": 1785199941.4089162,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_OZ2mYZUKkfctVIhhK10B2yTi",
+      "output": "<returncode>0</returncode>\n<output>\nfrom collections import namedtuple\nimport io\n\nimport numpy as np\nfrom numpy.testing import assert_allclose\nimport pytest\n\nfrom matplotlib.testing.decorators import image_comparison\nimport matplotlib.pyplot as plt\nimport matplotlib.patches as mpatches\nimport matplotlib.lines as mlines\nfrom matplotlib.backend_bases import MouseButton, MouseEvent\n\nfrom matplotlib.offsetbox import (\n    AnchoredOffsetbox, AnnotationBbox, AnchoredText, DrawingArea, OffsetBox,\n    OffsetImage, TextArea, _get_packed_offsets)\n\n\n@image_comparison(['offsetbox_clipping'], remove_text=True)\ndef test_offsetbox_clipping():\n    # - create a plot\n    # - put an AnchoredOffsetbox with a child DrawingArea\n    #   at the center of the axes\n    # - give the DrawingArea a gray background\n    # - put a black line across the bounds of the DrawingArea\n    # - see that the black line is clipped to the edges of\n    #   the DrawingArea.\n    fig, ax = plt.subplots()\n    size = 100\n    da = DrawingArea(size, size, clip=True)\n    bg = mpatches.Rectangle((0, 0), size, size,\n                            facecolor='#CCCCCC',\n                            edgecolor='None',\n                            linewidth=0)\n    line = mlines.Line2D([-size*.5, size*1.5], [size/2, size/2],\n                         color='black',\n                         linewidth=10)\n    anchored_box = AnchoredOffsetbox(\n        loc='center',\n        child=da,\n        pad=0.,\n        frameon=False,\n        bbox_to_anchor=(.5, .5),\n        bbox_transform=ax.transAxes,\n        borderpad=0.)\n\n    da.add_artist(bg)\n    da.add_artist(line)\n    ax.add_artist(anchored_box)\n    ax.set_xlim((0, 1))\n    ax.set_ylim((0, 1))\n\n\ndef test_offsetbox_clip_children():\n    # - create a plot\n    # - put an AnchoredOffsetbox with a child DrawingArea\n    #   at the center of the axes\n    # - give the DrawingArea a gray background\n    # - put a black line across the bounds of the DrawingArea\n    # - see that the black line is clipped to the edges of\n    #   the DrawingArea.\n    fig, ax = plt.subplots()\n    size = 100\n    da = DrawingArea(size, size, clip=True)\n    bg = mpatches.Rectangle((0, 0), size, size,\n                            facecolor='#CCCCCC',\n                            edgecolor='None',\n                            linewidth=0)\n    line = mlines.Line2D([-size*.5, size*1.5], [size/2, size/2],\n                         color='black',\n                         linewidth=10)\n    anchored_box = AnchoredOffsetbox(\n        loc='center',\n        child=da,\n        pad=0.,\n        frameon=False,\n        bbox_to_anchor=(.5, .5),\n        bbox_transform=ax.transAxes,\n        borderpad=0.)\n\n    da.add_artist(bg)\n    da.add_artist(line)\n    ax.add_artist(anchored_box)\n\n    fig.canvas.draw()\n    assert not fig.stale\n    da.clip_children = True\n    assert fig.stale\n\n\ndef test_offsetbox_loc_codes():\n    # Check that valid string location codes all work with an AnchoredOffsetbox\n    codes = {'upper right': 1,\n             'upper left': 2,\n             'lower left': 3,\n             'lower right': 4,\n             'right': 5,\n             'center left': 6,\n             'center right': 7,\n             'lower center': 8,\n             'upper center': 9,\n             'center': 10,\n             }\n    fig, ax = plt.subplots()\n    da = DrawingArea(100, 100)\n    for code in codes:\n        anchored_box = AnchoredOffsetbox(loc=code, child=da)\n        ax.add_artist(anchored_box)\n    fig.canvas.draw()\n\n\ndef test_expand_with_tight_layout():\n    # Check issue reported in #10476, and updated due to #10784\n    fig, ax = plt.subplots()\n\n    d1 = [1, 2]\n    d2 = [2, 1]\n    ax.plot(d1, label='series 1')\n    ax.plot(d2, label='series 2')\n    ax.legend(ncols=2, mode='expand')\n\n    fig.tight_layout()  # where the crash used to happen\n\n\n@pytest.mark.parametrize('widths',\n                         ([150], [150, 150, 150], [0.1], [0.1, 0.1]))\n@pytest.mark.parametrize('total', (250, 100, 0, -1, None))\n@pytest.mark.parametrize('sep', (250, 1, 0, -1))\n@pytest.mark.parametrize('mode', (\"expand\", \"fixed\", \"equal\"))\ndef test_get_packed_offsets(widths, total, sep, mode):\n    # Check a (rather arbitrary) set of parameters due to successive similar\n    # issue tickets (at least #10476 and #10784) related to corner cases\n    # triggered inside this function when calling higher-level functions\n    # (e.g. `Axes.legend`).\n    # These are just some additional smoke tests. The output is untested.\n    _get_packed_offsets(widths, total, sep, mode=mode)\n\n\n_Params = namedtuple('_params', 'wd_list, total, sep, expected')\n\n\n@pytest.mark.parametrize('widths, total, sep, expected', [\n    _Params(  # total=None\n        [3, 1, 2], total=None, sep=1, expected=(8, [0, 4, 6])),\n    _Params(  # total larger than required\n        [3, 1, 2], total=10, sep=1, expected=(10, [0, 4, 6])),\n    _Params(  # total smaller than required\n        [3, 1, 2], total=5, sep=1, expected=(5, [0, 4, 6])),\n])\ndef test_get_packed_offsets_fixed(widths, total, sep, expected):\n    result = _get_packed_offsets(widths, total, sep, mode='fixed')\n    assert result[0] == expected[0]\n    assert_allclose(result[1], expected[1])\n\n\n@pytest.mark.parametrize('widths, total, sep, expected', [\n    _Params(  # total=None (implicit 1)\n        [.1, .1, .1], total=None, sep=None, expected=(1, [0, .45, .9])),\n    _Params(  # total larger than sum of widths\n        [3, 1, 2], total=10, sep=1, expected=(10, [0, 5, 8])),\n    _Params(  # total smaller sum of widths: overlapping boxes\n        [3, 1, 2], total=5, sep=1, expected=(5, [0, 2.5, 3])),\n])\ndef test_get_packed_offsets_expand(widths, total, sep, expected):\n    result = _get_packed_offsets(widths, total, sep, mode='expand')\n    assert result[0] == expected[0]\n    assert_allclose(result[1], expected[1])\n\n\n@pytest.mark.parametrize('widths, total, sep, expected', [\n    _Params(  # total larger than required\n        [3, 2, 1], total=6, sep=None, expected=(6, [0, 2, 4])),\n    _Params(  # total smaller sum of widths: overlapping boxes\n        [3, 2, 1, .5], total=2, sep=None, expected=(2, [0, 0.5, 1, 1.5])),\n    _Params(  # total larger than required\n        [.5, 1, .2], total=None, sep=1, expected=(6, [0, 2, 4])),\n    # the case total=None, sep=None is tested separately below\n])\ndef test_get_packed_offsets_equal(widths, total, sep, expected):\n    result = _get_packed_offsets(widths, total, sep, mode='equal')\n    assert result[0] == expected[0]\n    assert_allclose(result[1], expected[1])\n\n\ndef test_get_packed_offsets_equal_total_none_sep_none():\n    with pytest.raises(ValueError):\n        _get_packed_offsets([1, 1, 1], total=None, sep=None, mode='equal')\n\n\n@pytest.mark.parametrize('child_type', ['draw', 'image', 'text'])\n@pytest.mark.parametrize('boxcoords',\n                         ['axes fraction', 'axes pixels', 'axes points',\n                          'data'])\ndef test_picking(child_type, boxcoords):\n    # These all take up approximately the same area.\n    if child_type == 'draw':\n        picking_child = DrawingArea(5, 5)\n        picking_child.add_artist(mpatches.Rectangle((0, 0), 5, 5, linewidth=0))\n    elif child_type == 'image':\n        im = np.ones((5, 5))\n        im[2, 2] = 0\n        picking_child = OffsetImage(im)\n    elif child_type == 'text':\n        picking_child = TextArea('\\N{Black Square}', textprops={'fontsize': 5})\n    else:\n        assert False, f'Unknown picking child type {child_type}'\n\n    fig, ax = plt.subplots()\n    ab = AnnotationBbox(picking_child, (0.5, 0.5), boxcoords=boxcoords)\n    ab.set_picker(True)\n    ax.add_artist(ab)\n\n    calls = []\n    fig.canvas.mpl_connect('pick_event', lambda event: calls.append(event))\n\n    # Annotation should be picked by an event occurring at its center.\n    if boxcoords == 'axes points':\n        x, y = ax.transAxes.transform_point((0, 0))\n        x += 0.5 * fig.dpi / 72\n        y += 0.5 * fig.dpi / 72\n    elif boxcoords == 'axes pixels':\n        x, y = ax.transAxes.transform_point((0, 0))\n        x += 0.5\n        y += 0.5\n    else:\n        x, y = ax.transAxes.transform_point((0.5, 0.5))\n    fig.canvas.draw()\n    calls.clear()\n    MouseEvent(\n        \"button_press_event\", fig.canvas, x, y, MouseButton.LEFT)._process()\n    assert len(calls) == 1 and calls[0].artist == ab\n\n    # Annotation should *not* be picked by an event at its original center\n    # point when the limits have changed enough to hide the *xy* point.\n    ax.set_xlim(-1, 0)\n    ax.set_ylim(-1, 0)\n    fig.canvas.draw()\n    calls.clear()\n    MouseEvent(\n        \"button_press_event\", fig.canvas, x, y, MouseButton.LEFT)._process()\n    assert len(calls) == 0\n\n\n@image_comparison(['anchoredtext_align.png'], remove_text=True, style='mpl20')\ndef test_anchoredtext_horizontal_alignment():\n    fig, ax = plt.subplots()\n\n    text0 = AnchoredText(\"test\\ntest long text\", loc=\"center left\",\n                         pad=0.2, prop={\"ha\": \"left\"})\n    ax.add_artist(text0)\n    text1 = AnchoredText(\"test\\ntest long text\", loc=\"center\",\n                         pad=0.2, prop={\"ha\": \"center\"})\n    ax.add_artist(text1)\n    text2 = AnchoredText(\"test\\ntest long text\", loc=\"center right\",\n                         pad=0.2, prop={\"ha\": \"right\"})\n    ax.add_artist(text2)\n\n\ndef test_annotationbbox_extents():\n    plt.rcParams.update(plt.rcParamsDefault)\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGEwZTU2OTMwZTdlZjM0YzAwNmE2N2ZkNDVhOWJjODE5NWJjYzA2YjkxODI1MmRlOTM=",
+      "created_at": 1785199941,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a0e56930e7ef34c006a67fd461efc8195a5b89d957b8ffdff",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_1ILTRX852yyblaRGqLgH1cxKopwvn1gQ2dB8f5ISBrkEpj1MdtjAY6h7kTPaijUzaW7DQwQP4w0dd6vymFtVPBborPyZzRXCU1A1kFDysl9IomJhCADmRIBK133frczZZtZXierxVACjVmm4XYhSrVBnaZHo9TitB8KDlOM6BjbHpooOlysb8uumXuccRXf3RdqaJcNYylV3SpN4kpcPJarHN3WsUyLFIUT_0wFs1SduimmWsk6k6V97DYqlapY0upqwGbNd4eXio75-B6nETqm6tZxz3gpQDyDWjOV8_jmflBLieK4fN96gu8Aa1crSy5KccQAj58EhUxjZIQJ3-DSEUA9SheChLJf62CdhhyE9-RLsixULeYM7xMCasM1TIVrMyyG0qBjhCvJhLY3FGuNLy-5j705fN5M2UhLiwGgsajONGvQTSgMNLTCFtXK4Zth7P1kFV_sqvgNlkLXJeLvgG5DpkCcXQ2oPHvzan5VYaTNk3RwNehDpfOaTT9y1OqdiuQcyZVTvKGUPMU19U9mmFpxnhe4xjCAhKWzrqjzfjl7foeMtNX6Y9sZAZh0Ve8n7FFI-ANWOkdyTtwUsbi0eDUA2W-NY0G90X6UZgfszjuy12E_UNagBuO7UWb6DgsreABSHQoWzEu-jyE-1WPABZVqBwplF8ufWxuy7w_5uJItw8Ku2zwFENFvePvNdtGXgTQqaAAviXgtB9OpW3vrY-HCQTQJGqsb2mFDEROyTtkSAOn_iTlU9pQXyufnWmshTACLhx6x-c3SunI25hbjkZgAmPW9shMKtwJkAPRcNlEdgp6UL-8V_X2QezuJVhqVkoa_-xQ9hA8LSBTdFKYNeAjTMh59zuBVD6A9LhYlLHIhuf3tSLEcoatazYh8VsR4hmPL2W-qOI35mBXMTdeAblu9zI6R5Hjm5Qr86pIvjsUMi0y0QzVP1aNysUK3_HKMAuxqTkM0zAJmD69DA4UMwW5spQElrwvD8f5YG6S_zNmgO47xSqqooNyhdvqskN2Vm7O5I6K3N9PirzR4i9mZfC6oxWnqOtfRPcaHtr6Vkjrz2CZlTWRw2CJPK6-RCQn620SrWmzdgvIGn7oAtbAd8H79YxlXkUcWXUpuULe964="
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && git log --oneline -- lib/matplotlib/offsetbox.py | head -n 80\"}",
+          "call_id": "call_QzbGdYIUKAUQVr65FvgrUsfG",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a0e56930e7ef34c006a67fd4676a88195bacb971e2704042f",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 9637,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 6656,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 76,
+        "output_tokens_details": {
+          "reasoning_tokens": 32,
+          "text_tokens": null
+        },
+        "total_tokens": 9713,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785199944,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && git log --oneline -- lib/matplotlib/offsetbox.py | head -n 80",
+            "tool_call_id": "call_QzbGdYIUKAUQVr65FvgrUsfG"
+          }
+        ],
+        "cost": 0.0074455499999999996,
+        "timestamp": 1785199944.5151982
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "03a0b5ea23 Doc: Fix grammar and spelling\na9c96200f7 Merge pull request #24444 from rcomer/annotation-doc\n390b277967 DOC: AnnotationBbox keyword descriptions\n8ef4e017f8 Don't pass unused xdescent to _get_packed_offsets.\n2b50a5cafb Inherit OffsetBox.get_window_extent.\nad94907011 Inline AnchoredOffsetBox._update_offset_func.\n438d30b227 Get rcParams from mpl\ndab648ac5e Merge pull request #23177 from timhoffm/constructors-kw-only\naee51c8691 Deprecate positional passing of most Artist constructor parameters\n24b1680473 MNT: make renderer always optional\nc78d16dde2 MNT: Remove minimum_descent from TextArea\n075ff09528 Small style fixes.\n52df591338 Deprecate docstring and update references\n7bdace8faf Use picklable callbacks for DraggableBase.\ne6794de630 Merge pull request #22451 from anntzer/badkwerr\nd69be2554c Clarify error message for bad keyword arguments.\n0d0799ba36 Merge pull request #21267 from anntzer/abb\n924d7c7f99 Cleanup AnnotationBbox.\n6345ef6bf3 Copy arrowprops argument to FancyAnnotationBbox.\nff30378cf5 Small code cleanups and style fixes.\n8349be6a41 Use bbox.{size,bounds,width,height,p0,...} where appropriate.\n6fe164468a Inherit more docstrings.\nebc7b67cf2 Dedupe some box anchoring code between legend.py and offsetbox.py.\n450cdc6323 Merge pull request #20439 from QuLogic/fix-lgtm\n8a878ff428 Shorten the AnchoredOffsetbox docstring.\n7c0b9ee2e0 Remove dead code from LGTM alerts.\n6c80178578 Fix remaining E265 exceptions.\n638bdbcd0c Remove offsetbox APIs deprecated in Matplotlib 3.3.\n51e9874d6d DOC: fix typos\n0746dc29c9 Fix zorder handling for OffsetBoxes and subclasses.\nc803bd9cdb Move from cbook._deprecate_*() to _api.deprecate_*()\n410c51d6cb Move internal usage from cbook._delete_parameter to _api.delete_parameter\n1e16181eb5 Update lib/matplotlib/offsetbox.py\n7845382533 Fix kwargs handling in AnnotationBbox\nd786d6a437 Merge pull request #19013 from anntzer/gpao\ncb8d3c51b2 Merge pull request #19015 from anntzer/textarea\n5f72e0c316 Improve docs of _get_packed_offsets, _get_aligned_offsets.\n7f3089f5ec Better document multilinebaseline.\n97647343f2 Common `__init__` for VPacker and HPacker.\nfed55c63a3 DOC: fix typos (#18980)\n47f73d76e7 Move from @cbook.deprecated to @_api.deprecated\nff9d2a5b27 Fix some missing references.\n7ded0f2f55 Merge pull request #18528 from anntzer/minimumdescent\ne4f875a248 Deprecate TextArea minimumdescent.\n6406646cfd Merge pull request #17521 from Struan-Murray/e17518\nc725179565 Move cbook._check_getitem() to _api.check_getitem()\nc4105dc01d Move cbook._check_in_list() to _api.check_in_list()\n50ec1c6bb1 Support horizontalalignment in TextArea/AnchoredText.\n5037eef191 Fix warning when legend is added while using TeX.\nd10e48698e Use `super()` more in offset boxes.\n8f79d6c377 DOC: Add numpydoc headings for offsetbox.\n01cb983fac windowextent-for-annotationbbox\nd79dfaa8ae Simplify Annotation and Text bbox drawing.\n069fea5733 Merge pull request #17002 from QuLogic/fix-annotationbbox-zoom\nb8eedd850a More uses of _deprecate_method_override.\nec8dbab397 Remove deprecated arguments and keyword arguments.\n00892637dd Remove Patch visibility tracking by Legend & OffsetBox.\n1816036d91 Fix AnnotationBbox picking when it moves offscreen.\nc84f1b9b42 Fix incorrect reference in AnnotationBbox.\nd7f9977bed Cleanup old code in offsetbox.\nb1dd1ad567 Fix various small typos.\n3f6a3b116c Deprecate DraggableBase.on_motion_blit.\n376b75d3d5 Merge pull request #16684 from cool-RR/2020-03-05-raise-from\nc89ac3eaec Fix exception causes in 19 modules\n1fe47b0fa3 Clarify tiny comment re: AnnotationBbox constructor.\nbc1913b9ae Cleanup imports\n25d05ac06a Deprecate DraggableBase.artist_picker.\n3b2894e350 Allow directly passing explicit font paths.\n4672097afd Fix overindented line in AnchoredOffsetbox doc.\ne2fcd51259 Fix more missing references again.\n45cfd873fd Merge pull request #16096 from timhoffm/depecate-unused\nd8f815d36b Deprecate unused parameters\n7c119b66f1 Improve docstrings in offsetbox.py (#16085)\n60055a07ab Use triple-double-quotes for docstrings\nad70829c7f Inherit the Artist.draw docstring in subclasses.\n83bfcae969 Mark self.* expressions in docstrings as literal\n884affe42b Fix AnnotationBbox docstring.\n743dcff3c2 Avoid some uses of len-1 tuples.\n351b10d7d7 More cleanup defaults in docstrings\nd846d87fd2 Use True instead of 1 as filternorm default\n",
+        "returncode": 0,
+        "timestamp": 1785199944.7522228,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_QzbGdYIUKAUQVr65FvgrUsfG",
+      "output": "<returncode>0</returncode>\n<output>\n03a0b5ea23 Doc: Fix grammar and spelling\na9c96200f7 Merge pull request #24444 from rcomer/annotation-doc\n390b277967 DOC: AnnotationBbox keyword descriptions\n8ef4e017f8 Don't pass unused xdescent to _get_packed_offsets.\n2b50a5cafb Inherit OffsetBox.get_window_extent.\nad94907011 Inline AnchoredOffsetBox._update_offset_func.\n438d30b227 Get rcParams from mpl\ndab648ac5e Merge pull request #23177 from timhoffm/constructors-kw-only\naee51c8691 Deprecate positional passing of most Artist constructor parameters\n24b1680473 MNT: make renderer always optional\nc78d16dde2 MNT: Remove minimum_descent from TextArea\n075ff09528 Small style fixes.\n52df591338 Deprecate docstring and update references\n7bdace8faf Use picklable callbacks for DraggableBase.\ne6794de630 Merge pull request #22451 from anntzer/badkwerr\nd69be2554c Clarify error message for bad keyword arguments.\n0d0799ba36 Merge pull request #21267 from anntzer/abb\n924d7c7f99 Cleanup AnnotationBbox.\n6345ef6bf3 Copy arrowprops argument to FancyAnnotationBbox.\nff30378cf5 Small code cleanups and style fixes.\n8349be6a41 Use bbox.{size,bounds,width,height,p0,...} where appropriate.\n6fe164468a Inherit more docstrings.\nebc7b67cf2 Dedupe some box anchoring code between legend.py and offsetbox.py.\n450cdc6323 Merge pull request #20439 from QuLogic/fix-lgtm\n8a878ff428 Shorten the AnchoredOffsetbox docstring.\n7c0b9ee2e0 Remove dead code from LGTM alerts.\n6c80178578 Fix remaining E265 exceptions.\n638bdbcd0c Remove offsetbox APIs deprecated in Matplotlib 3.3.\n51e9874d6d DOC: fix typos\n0746dc29c9 Fix zorder handling for OffsetBoxes and subclasses.\nc803bd9cdb Move from cbook._deprecate_*() to _api.deprecate_*()\n410c51d6cb Move internal usage from cbook._delete_parameter to _api.delete_parameter\n1e16181eb5 Update lib/matplotlib/offsetbox.py\n7845382533 Fix kwargs handling in AnnotationBbox\nd786d6a437 Merge pull request #19013 from anntzer/gpao\ncb8d3c51b2 Merge pull request #19015 from anntzer/textarea\n5f72e0c316 Improve docs of _get_packed_offsets, _get_aligned_offsets.\n7f3089f5ec Better document multilinebaseline.\n97647343f2 Common `__init__` for VPacker and HPacker.\nfed55c63a3 DOC: fix typos (#18980)\n47f73d76e7 Move from @cbook.deprecated to @_api.deprecated\nff9d2a5b27 Fix some missing references.\n7ded0f2f55 Merge pull request #18528 from anntzer/minimumdescent\ne4f875a248 Deprecate TextArea minimumdescent.\n6406646cfd Merge pull request #17521 from Struan-Murray/e17518\nc725179565 Move cbook._check_getitem() to _api.check_getitem()\nc4105dc01d Move cbook._check_in_list() to _api.check_in_list()\n50ec1c6bb1 Support horizontalalignment in TextArea/AnchoredText.\n5037eef191 Fix warning when legend is added while using TeX.\nd10e48698e Use `super()` more in offset boxes.\n8f79d6c377 DOC: Add numpydoc headings for offsetbox.\n01cb983fac windowextent-for-annotationbbox\nd79dfaa8ae Simplify Annotation and Text bbox drawing.\n069fea5733 Merge pull request #17002 from QuLogic/fix-annotationbbox-zoom\nb8eedd850a More uses of _deprecate_method_override.\nec8dbab397 Remove deprecated arguments and keyword arguments.\n00892637dd Remove Patch visibility tracking by Legend & OffsetBox.\n1816036d91 Fix AnnotationBbox picking when it moves offscreen.\nc84f1b9b42 Fix incorrect reference in AnnotationBbox.\nd7f9977bed Cleanup old code in offsetbox.\nb1dd1ad567 Fix various small typos.\n3f6a3b116c Deprecate DraggableBase.on_motion_blit.\n376b75d3d5 Merge pull request #16684 from cool-RR/2020-03-05-raise-from\nc89ac3eaec Fix exception causes in 19 modules\n1fe47b0fa3 Clarify tiny comment re: AnnotationBbox constructor.\nbc1913b9ae Cleanup imports\n25d05ac06a Deprecate DraggableBase.artist_picker.\n3b2894e350 Allow directly passing explicit font paths.\n4672097afd Fix overindented line in AnchoredOffsetbox doc.\ne2fcd51259 Fix more missing references again.\n45cfd873fd Merge pull request #16096 from timhoffm/depecate-unused\nd8f815d36b Deprecate unused parameters\n7c119b66f1 Improve docstrings in offsetbox.py (#16085)\n60055a07ab Use triple-double-quotes for docstrings\nad70829c7f Inherit the Artist.draw docstring in subclasses.\n83bfcae969 Mark self.* expressions in docstrings as literal\n884affe42b Fix AnnotationBbox docstring.\n743dcff3c2 Avoid some uses of len-1 tuples.\n351b10d7d7 More cleanup defaults in docstrings\nd846d87fd2 Use True instead of 1 as filternorm default\n</output>"
+    },
+    {
+      "role": "user",
+      "content": "STOP INVESTIGATING \u2014 you have enough information now. Your NEXT response must issue exactly ONE command: write your COMPLETE implementation plan to /plan.md using the heredoc form (cat > /plan.md <<'PLAN_EOF' ... PLAN_EOF). Name specific files, functions, and concrete edits, specific enough to implement without re-investigating. Do not run any other command."
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGEwZTU2OTMwZTdlZjM0YzAwNmE2N2ZkNDkxM2YwODE5NTkzMzhlYzA3MDRkMzVkYjg=",
+      "created_at": 1785199945,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a0e56930e7ef34c006a67fd49bdfc81958ddd7584b9f8a5d6",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_18bY1N26EqzdGIrjD9GCxiadvyrfrrEgQafaH0i2Rw8FAfgE3_mSpsPy9Bp-3QWSAVaL4q-UteHJyRiSr_vg7tAbPYk9LNp2HSml6fatgYEuDvk-NkaMezL9YMe9JM6iJctxe82IUXbvV59fd6o32AU4uODNFa3SOx7ef7T8RbJJR6t14BI0abIjV2Cly1IUUgj9BaEsMuVQgp25khT0vtD9VSm93d7fWlE55RWtj7lqHoZYr6WB6zImESgr5SMsvWwqJ0VB7bu3NTXA9xYWU5x3gcb4GGBDh4ayvXX_ZfAR5SmqZPA1122RhaLysVfRXPrd-aI4zwzB40NSCRYOXbshyPeI1qWSUOkPPHjlNsK3MZi2rFTEtafSrgqsEOzT4HQt2hChSl0u97zHCFVHkxaoQHgbCi52HuSYP8iDptSM6w2ZLsUt52bzobzixxDCzz4t7lw-FuV5fshhXB1Pk0RbQRYYCXOasUcCMwqJk6TgKpilxZBhXuUrRIWBTECYspNgzX8JVyETC_0SMAutVR7jlzLjnC6rTaB4ETWe4TVamGuEpMyLFOW55dsvzWy8zzscGgfoHrliCH1ZoqGxSLNUor07I6MYhUHO1YMyHeQ4WrB00skHFE0L_yVSaZYHAvN8OO2-JGg9W1mCoaiUbn-Kjc-6TL4nvUaUQYS4O6PJ-AgU_gWjPCdWUwODQXxylkejrM3rCx1rA4bVBYaOaFmLIwswh8JbUkcJMiNYInFmH05EZe6wHTd8m1yjE2UZhgC0GyooBZwxlimgpkkwyDZxS9ay-LJq08NdEMfA2cKwTUbdQy4C2NrjIxChV-EEvKf_Zi50JlX2TyKb22Sa85OTJMkmpBdRZnxIMVvcyrcvvJguCs0yYcYM9O16IYsw9AUcTRB2dersqD0mgmqtvts-5wBzNnPzQRHWbJ-5WciaTl59VOqYjZPqjekCJJSqe0yFyT07DHsKw3IH-xzsCRgve8MVWPY_y4qW7AXnIMEOMZjrIk_a3za4HJP4gHZubXd88IciTmkt249JQuaLBEnUFZe7zRu0Afm3ys9IwcJ33RkUv4hE6xC7sTjgysrdYgJbU_95j1wwYF0S-GdVr03hFoayNSCFqeug_a5sDW6CEIVX9gWrcxm1PTiuCQ9DNhAKV_4HfCisJAgiF_mi6fFx1xdLq8bVC_knTfzliuNbzPXf3Y6kU9lDVeHdixFU4TOohdefUjBd_70Uju0rukEqwZGJ3Jft2ZeiIHkCLTUuMxgZV0dIVRX1aW_uyP1RB3LNaAe8_v4DmaOJg_vcR9PniOcb26zFv6WWzmZBABvDrBlD-B41luYsleh6WnTLlfDVgIAmDIQvXbiwmcq-GBkJc-bmmjXKDA-L1rOadbuQYDxecbYaC32tXEhhHw2kZKlbh5NKRc_oV8_LCBOwyUzIKpJkiPv0XEiu0S0uUFZph11nT_-ZdFmMR0angIJOAg7jk06m1zCS-SDRMnIUr4jeV08m5dHvQV7LoyE_P-B5S2qBc47D8w8reh-WXySUHAZmZWDZxGgC5ZsUjyoaN3SK0UF8fKXKI7-bIEV_jMXSxRHM2l_E2hHScb8vsZOfjEOQ1ROeCdQgUm8GkyghJ4dSB4ldyTkOgBw2uelymOdeqm9rbOr5T43ydDHS7sfmhU5maejAaZiLIh3o6ybJJK17hhLQ1UUawSqj1unjjGPDTzrWFExFJ1gqcFo7UH1eg4liXzgi-ZQ-ZnV7bY0fggJm9T8sYBcbhOzMJY_F6T84wb5A4r9jZIHdbKQ1ezIvtB9DWG9hJ6mIBcYlKGLPalQYWa9aXV7gAw9JpF60zJVP6hG5qEzG8putfk0IqiA5PbkibLdrWyRRVxvVNk4L4pYtRiCemYBd4OLOIpdh7q476hiEHApXjHoLVo8WUau07x2hJLRCySvDmrM8XaP0RKiRw1H1ntAchVEnbcpvQPwURDt1AtVwc0_zNpm14flZZDWnby-UVovBnUvSA6h-pq_4DBbZ8rwgznlSm2-BAdQFr9t1jEHHus77p3iF0AeqiuX99NC_n19aKW8dTaogAoLayyRzpoXAG1LbFurwwoVFmfWHX9KW6E_SClUrWdJCdWlDbf4JDY_QWgL-JwWKlpkWHVBkDRLfZwoNc_Q0diHblsE0ScW2Clf5uAc8SVGn3Jc552a2RBMGtZ1sZY-jtCKAsXLfCJkOUbMYKICjQQR1mvKD934Vu6RXZttFfM7ugD2qYEoZ0HLKTHVwwDogxNuc4Io9UX4T3A8NbzuQs070Kg68A_xEjFATqp-jHalSvNu9CJiEXwYCujV4OxhHhYDpWXt2lnZ1J9NbRfRbLy7rH6jXmbmPnRZmKFXAr0Tserp7F84gUbq3oWMiZLH95WG-FvoQaMhi9-WGmN--FpY8PUFdby7NQ_wGY_L-7HnmEfmYT_tOcYEEdzhvWOqf2Zik_fwitfXvOB1mzZmIHllpo_28r8qw-aeidEjYDdfPIBkCRc8OBCsv0gfu5d_-zzAJQq70yGTAVPmO2Z86GeRrqTGbINpFglU4xBDrHqVPmYxe3s_FsgmaNxUhECBAL90WeRxWljFbG6ySnWro9P36J4oxMACqpqig-2UeQ3AjpAaQfJaY2845j5C6dIZ7iixCsHCyF3IC3nGdIzP_FYxJHQSRsqwTXA7PQ31bUIxcODzoO5GMZZoKGXd9Q5pysM0COYgPl-Djc7neRTgidiWRuoHAefUiXXdxVVygojkCJPmS1VtU65oz4AyUxBRWBquz0WgIMzJA7JgneJhWNcf_hW2v7_lyPIMY3ZrHahIoBTu-pwkwrwJ5UJAspHZmPjq6J3Pnd5hB2VVCmDScaK12g8fQXXgoM8H2K7btIOOieQ9Q4uu-1VNW93SSiU24q6vkimY5vNM7aon5jGfmxPNyg-FmD3uVM-Dy7bkicNikcCfMbeBDE3-RL-67Zu1R_8pLs7-_CuYDe6tWIsyUyORJVNTYPZdPsKnI0DTtDBR443KMEbItfj4S7DTVKvdX8T7JUxZ24jQAWNmBUaHmpz1xa68gxrpiRw-dGiHdPoO54YFh0J6MptGRcvtWBFtirSTrfZm6cZVKYiytRnhei1MvhYsWBycFzGo1XRIEYUaGmnS4xXgmUjutsRURisrblEEYsA1Lk4X3-hr2_hOsxuDzkmCRgtlLa70tvJlx8oWGoCJqV6uETDWdjvcLa3JK-C5m8_u-RICDm5GA_kdUwJlNs8U1_ObUYh-scKd4rS4LfUHyQfJW_Ht29tz-h8zWPAEAoYnzpmDBdldSTRrZ2sJyiqz6n2J7cATIjmNwkZ5uqKlbw7_DzFvofAoOcHNnHadEIhxIrZMv1XsddQtT7jhd0I32Zhs93NdXYt8ucrtOyPZ8bOlImZK6OhHau6QjkpDzUtFZBSDbhNy7RiGGOdc3GbXAJA8i7DMcSuun-oerBGGBT4FSKMiklIVOlqolkfXsiL4SF1XwFnoG966sZv55Vf70_G1ZPM_iFBRqYrF4D21ReJzMjqs7vTVVZMu4WcXZ6Zh_aP86zpRInPAQepTCMLDIvD67LqGAcy6633YhGkQYrbMNPgkM_CWl39oc_w2aEvZ5ORFwOR0GCGt59edo4VPsICeO6Fg8w53aq1vJDAIix1dOzQoO28DsryLpZIrGPw9bjc4s4c5uTTYlPhW71p_BD5U8LAk_g7xaH0HZa246njyOQCP-2SrMNpfTlMxotxno8FCxo8_zg0eOu_43_G3uET-tVLY6kxo8Cwm4SJzxXvuLK5XBbjfcz8XNLuw6WG7V1oOR7pQzgseFhYuh4_dhkZXIHBsHn9SQ-QyYYUsyJfpDXdXC84hdzEyajkVEmaw09k1EYX87JxjrNOr-dNHP-njrB844M_ou4uLwyMsziLbwcOqs4C9yBnEZx5yLoEUWwJfEcBq83eOpHT66vWThMv99HK2LbrWlVUwBfbaC-UgIz7Y9PBxP5B0WqG8MZScOUAgd5ebAkEnrXTDtcbsf3VUV4F_I_gzbk2FbB2cQKKOw6FZhNcZpoH8O1DMI3VLgYavbWG-hxlLpfvvClPjtTSvwWE1eksfUK9FlVGsxrXktpL1ev3i64ugWFs06CisRGYlQVEHxHyqxWUlq3U4iVngWlenEeF7TqCDBFHP4_iAWldE68_ueh7fRlHnVGZNn5draqB94rj-rr6Dd1o5Yc241nJADAZJ36Wk7IjAk2py2o-MeXgg6Rppu4ueve6Zedo2QT4NcLnOEbXoq5QkydBKTLbt3GSBfp9I2DtZ0xj5J7PzHLkD8kZ1gPiAIlRu_JR12mVqVBaC8Y-ym1sWiP2wPpkDmt5bABMMEiJgscL_O1OC1TG8Nw8AWuBzHOkHC1vEaXrbCtf8_bNq_nmzEqBO75y_5w9zTezf_dzRVFUGsvpzjzaAaQHUbQDJrWdfNE4rl1FZbu6TE7N7jUSvoZ41kRUn4d6BHcxKP_iZ6PUtVwMR_3tKX8pMyra70-vnXHaAvLNO7mg9mL1-9YlNAXWe8aS8i8nGSLx95qiJ9RHgEAMtKfrFLn0CZCoIM2eR5A5IYwSnlyYQ5R3DiQhwLHDsNqa_JMnE2EYDmaLEZWKGu_Y6Rv8tP0p6O4nIPUYazUsRpxk5ZfORmwoV4NQn90IYJoKsDYxiTNy5LfzfKEXKmqE0FBK-mr7hMqhBG5OzHOyAP7h2ruohqUeIDO-e9AmRMUhJUl6RWQqKlp8GVTBYnolebCueTAlawOacbjRz92-5oQhgeCHqB0yeLv26xtDlOVTAzhLiVvxr-YQI6v0OCbez6yakEXKlm107Ti48FMLXcuiPnps1aAKPNVNdZJmoQUM2XeaVyfQpIx8gV3gozwkAHB7vfQkAN4iez9Pv1Iq8aIj-vA6R1DL3jImA891xNeyXeH1iACLr23kE_aNhuZoZB_miH6L5pQODVMuD503-KiQYhee2sWUvB3iwzD9NflosLO0ZXv_7sNSMw-GiJIqlX_4jdWqVAH2ZGunTk5-wt7TT9xJwWdS8sT1YlabHG8EAjrZdDYpk_Hxvh1vUh0d8R6Kmi6lP4W2r8YwP1rZU4NYG7TsMdMA2C9HIdUdZPAkaouTIXy-Lg-BpJnpgANDCYLXFZfvpbF2zC3f6_AcmWQe1V6-1Uy2IrOP-d0-hYknbVyLgDv7WEnZntYbU8hGPaJmfu91FyRXxIEeBRQntHZ6rCfvhFnGyedcmkOklZBfHqDUmDkWDm54cjZ9IQuk3YoWR_yJ6UOZSYsC1SUVd9kgwvswlMP-Ab3HTCQzo-0q35_ge_77srFr7OEjezq_TTvcFfiyWJDqCD4zlnZuOmG0y4Gy9r1VejeYsDyicvBLlp8Sok3baeLhGVvr1d-qtLPLMffO1N4BPAthltqrH1l2u21rbW3i5_KLIwzTYmt00f8-aAned3Jqk5ZPBnisDOfaj4Yd4Hc1fZHoZjz5qlhNiVt9ImNOcy_G47xnzg9nur_Ny-2a0xqostiv1YRtH1z0inNHuV5WDSbpex2DBuyG8wBASf--zfNMD8cbULQurRu8TnsgZKONIQGox9BmG4kBGoPA4ZLm2ucw_fuSS8az_K2LUuxTGXeutOosXuQLylipdgOi9_OFClufTN4PD78BUFQkhr7v_-E_Bi2PcYHw-2JxKbBo6SL2kHFNOf3IyjrMP1Dh5bxozHo9suuj8kd0NCdpITbfyQG46BWAwOP2jwyRwCCCI_WuVBRo8KdceCjDduICktNBRbrjYrWU3EtGhjZwhZyCXgwWis3BfalzdZ2HjMhNTjp6YkJKg5EEKxBjkrDOWHbC3FFyMGStGCz67E3ivJiwz_FoN95Obl55iVw-XGCZPnF8sWXpqlaX2Bs6JjQOgZvHLNoRBYayPZyuJsivwCD0RJSy_ZYzKfE85y1ImK3EXLDtMj4oJP-v9e43Bp0iCgryd1l1g65RalYiIeIhFXvyVTMfeuk_gFD8bJKJO3bsJij_4NmaKzKdU0urk9HGMkjKeaVGpKHbGoaWPf7SPa6KjCznPSqZbCpD7M7vD38eQmR4lUk9iNLX_BqAs5uHy2jOoezKPggC92MCq7eIGp8lRbl_FhVl9_epvK-zz7T2hEtZZPr-DV_ka5IsYhlcRsQUE87fdNSFCqsAqqgRYkQSDA2CWPKu66mfFjd5L_mq2frpiPm4-Cs1hAYM66lBvJxh8YEPKsofACWD1blPDrAzYgOO7Hxv8MHwO8PgRIX3B6Sypg2UvwImuElFK338xCI0b_fJ36p-kUKC7_PHLgpISifRXKyFOB57qnWViL2Y5BGxqjb5m-O5rfUjWMYDCcIx9SPyoU7cbe9ix5Tyet-7jEubde7Uu2z8cMPTbN1xgFGwPnIPprULVu2gscDVTgOGkt7mc8opDee1fYTiKBw-dzXaP8rm6BNfmv9oMC8nUbxaQt7t5_SZJjcDwBQo5VK2yfT-WZ82_yxZanJdg7rQdmHeML1tGf_jrHfH0oxET4RtqBokk2Eg0xAztGbH0u33AQgQyEWiPMGpZ_kBCy3ev0X1oo0ZfFkFM1bUNzNEbTMM1jgnQFAqFdRMXId0vEbAigsK3sV34cA0hm0kTaYGdBf--shViIbf2PD05ow_aHB0fHhz7zUkcIueomp4lwD7-mSnWbSgLArolQwAlvh-9lx4lpQBwLnReyQqf6Y_11V8IsQNgwit6q1sKzwXL2qvmCSSrK__UBOVVFLuJJ1Wv4CYGnWU9qgrjD3iXXtXPjnzKuYyYQdqTOMqpLZgtgo4LB9rha4vFqM_SEh_uuVJy7xKpUcFCpGusrTlNlPWGKByj4_H2F8geGYMAonGzBBOgW_g6Z8l5PPfli4YqgXYNocSM7-Hb41pe-fp3T7dWilLElkT-7QWAkcNjs9ZxSdKX8Hh5ZMEW0cLMmwywU3uLHuX2xMYeLBBRsGXzxmRgokgfITFdI6xS1NSdwiOFeCMbViAe8dZqM7AFUUXWQCGnqY-iOQMCQuvxAf5DbuAQkIgmcM2BOQc5krhGm9d5QAFSvaEmoXubI87OThu4YJa5VL32GUoN8poKWJvDVXdfo98U1cNV2DmJfxx4BVf23-7K6Hkdfa_azOB13n31IsBqhgTqNCTAc50GGfj9U3gfULzsobqfgD7UOkIz7de8TsamiJX7okVc5Ep5qiZIWDfXUYAcexh4m_-R7t6D0BSsb87btJZ5ZGC6yTKinY22xIiLw9VSmy2pLH1cU92iDlFRoiNVHQpxX2QH79uleYDTUAxUgmam0eTyWPux9Bl36iCfkX-aTiHdDQGb6mSuGyALk4XzMsaF7SeNy8J6OfigoR1E5AmV02ZmkZxnU39-D1QOvKHQoovy9JuUwvnGMS8a_LtwsttbaSPuQsDAu2DdL8TLLZR0CyuaXnrsOAA6o_Vzm3rY9TuMtBzRcvxn9nrCMSJ-MmLBnyADE0tf3vZ4uf7N0b43u1aFPn_wbAFyWkeOEJt07ZpboWpD9WOMbgesk9nbrVdz5ZF0lXoivmdpxxSZOCjsDTqVoZVd9hK0EIP0I6YRvjVuM6OCF-IY-J6HJeajC4Dw52i8hLgOLuQlel4wpI5G6HXL7XatX0B-RUImWhxOiB2LY0IL3P4Byff5cNZL-x2oIyYsM42GCoXYH8VL_4pL62ogPISr4mWAd5RINOz0VSf4UQcP4_TNug2xf2dOzVzeFZ4KwKTOU5oHzZr6ur0EKjwSUkjGKMHAZH_Bo4hpqVT8eOrTvmJ6RH5G87C60W2YWsL0dfuqCpGD0ny10tX4kT5s99jnj7ui5A-PoyrN3P_VEVZwYefTuolTO1uRVqE80Z9_xDHKvdD1uE5c9fW7y7OeAwAFr8XSBPrHLYfISEl5Mqe4N9Hwa1oJ4b9zAUvYEw2CrrOhXx32CZR6gHNrUN5E5npkf9NOlhKXNaOl08f8YmRNYehZ-39lJAiudrUX4Fn6m9uVxSF93y_JgdREWIKl-rPWAKWEfB4IlJsz10lLJgUMaOkmGyU5_2KXVEydD5hmtS9vMJ5iCbCktP7DS-tZwLaYM4tTwoi8Q--3YYzO362K64AQiMDJMIhxfx31dm4uVt1YcJgBZm9aTQt605EJ0LG1kVOQJPzo2hAXhvNasicLYh7iHTTkEpHDmxuQm0AOevdd2VQBmBPYqAUEDHuk47-51rJjBb8tOgOiO3EB39QNFMVaGSE7mczl_7dEpFHyVoL4BA3_OukS2Tr1Sm6qaHK2vewRgt2xuwgVQIvX8xEh5HstarbtCcJMGZlesWASy2nI16NTY1rGesLCEmQ8IphdH4hgy3dRoQwYJpA8aGznxsnIqQYjFChrkY5UJ-JbCY8tiGzvWlXXl3hgelwoSN09jLxlyM8caWLRjYWF9Ek8tx7Quz3uR_s-gFbygddrZCGXhF4EnkV5mn8JakoQHEZticyEqmuq1yr3yNBgUtECUeDKdy4NiGVb59EaHAfPwZTi3_9e6hjjADlzK3kXNI9ibx3q71XSnDHArbr27lWl3Zjjo4lQ2AdnnOPIeBh56U-Y0uPEOoRWun-k1s4EGmGTEKsTvMFLKjU19EIaRhmvV45I8hXly13tdxfwudpch_ygMVJGg11RTYT4exUkyOjnIu9lKH7VBha5StpnRDlrJZBDXLczbB3fgn8D1t7lOol3ZAsDd91kukC0IeizIg0qa0s7tAkcJkydcRhVjApEN3se8CsHUiLG9pkIHDKAbbKLlAPd-axyH3_ptsM60HW62utp-myMUiM9C9teIn3cztmkYcufDjFHqHbhnsnQ2G-kcjde0e0WxXoS_Mqo--dxDEfFSx_ZYlCWHyjTLA_ZAr5zKm2GL6PgP6Yzv2mbO5BNbl7OqjJB2TD4YV3nnq4jlG0uDxyUITxzqlB6_Tj41eQW5PEAurBCgpAw8B0RuedIxEphr7rg8UbJneq3jrKELlFj25vIm1JQgJvXUiq8i2FKphnJ0VWjHZX5072dgHqPCmPUfdIU5WoOzuq25VrSuMV47mbVZhzAJNLyBgR5pu94FgrP4tf00DxY2lTXCKA1LiP_2o9LQ-yksYXk6vHdMJF7W50ghjG6scMOIoykk6PSE2dWaalhVMyypYHBz7FwJTtDBMl_cseCV6tJAEe7ZR-LPNDpNUcHd3tV1Ir5uce7Q7gUa6t7pQmZBCZD9EsjATeM8wm_119nw7zmQ-TT9M3xDPlsrleNdqs9YQt8zHASkffED6__NoQA7Z4fG2tNhihiVJ_M3dFW1dGyQtWnIj8v2721kCbm2AfpcrTFMWwhxek3sj0QCrM8FwsPPz-RksJTQnB2u9Wxpe1TVRURRmCdBNpVSIkzMr0ovWJDAL-5Xw5W26CJUFvc9_1whNfPmuW2fpQzIybIxu6Vsshh4IpM7yKqhVAoQ1vT-jnmvnjUt3k5ZHnd65Rh0JuM107KB954-S0w9HKuu97HM2OKTxxaFDiF3bW3Vii6f_TGP-WbD5fhufwC_hyaq1SYHJh1xcti1FaJqiXzE6Rn40CyXx6zSYHCOIwj2hjQjJYTmlpn83wEVJtmqKYnXZZzOMj_75G7ohV9pW4elNki8eAsK8-rAgt5r7yUeXzFdkgaJniNHqH1g9qIjyVPWtNA1LCqwMCjMzh9AdMcp4z6YkcbUddAZl2aCqpbhp8SK1eW6jPfGPIJW6hsuT5aa_ErxMnWI0NXfkVWq_kcBsdzh16mOsWgWwnBM7z7bQ8_0XmwzQGxCxfGUZmtkOW77dZymU43j-v-3gfsz6IXA3Uq3WgHdsyA4pj8J_Q8J3yx98wg5XdvgZ3O96AC8aUBWtgG8YI37ivbH0POoMZH87-ok0KJj9abcqQ2wEUM6tWBzlvNzVNBrb_qDiTLAgF6_6EMRqX2Gw5ZXBilxWjiI_czIvaag2wQa8GC6s7VhkfzMKwLmT10IT1HGTW8xepR-dhlRyf0w59gUgvP9gX0BOomGt0ev41KnMl71d9qw4Rst3D0XgH40oe9QkOvMkJauz4_gXEs6d4IkKBfYiy_emI4Ugf54NXe053u2GZwqrw1tdIl_tekyw82ZVrD8g1xz6nt51XrR_7wFalghJF3lV7XlwHNNsux_zgU_Lk8ct4eOw41Pezf4Vj2lpF0KVzYP663CwsknpXfuM2rSp8OE0olsUFscE3WPGN0rlhAWZmRK9testU05vLW82D_gaq5VRMsF0_tuquwz7Wf8q30Y-myDukwU-Siux0pbMPIUTbB_fa7rXJg_Ezsda96rV5G_P4FqhazERksLz1OTBOtsqGiVyffGrb1jx71irmS33lhLyur482RwttSw_gI5lA04mBcE9A_W-f6G-kVu6g3hyx_JFqvoHLeTpjvls3ueTo980qFZkeChcCY-5GRGwNXBU8PMKiGDzb45DemTuXikbImLcW0AabYcKTAl7QKUmgv0emCwIMeDEpyw5dUGbT7wU0NOfqn8O_enJMQtirwJiG7RfdqNmvZ58eo2Aeo3ZBWEXEdGXuPkvZrpmg7Jbj8rbp0skpqj_EhipWb3e0ZkvERyQBswWDHngO-yPIijC3vkJLoyYnJICExqzCRv4Rkl01w7o3YBxvV3WkIDCdyx7_ojbQsuWIiZNvZLSp8UZVCy_LcAR9iJwQKPUFPA0jEXpOtqw2AZVnX-Jb5VBMAXUvpNZ_2Ew7mV213zs_Hv9VQQeD5Dpl_T-ZGL1qKZJYZF3czv8vJ1N2POayVtX6HYJX5_MXIiu358XUA46GvsBp3p04-m9yyGYImDLXt6yak28Id8y2gkYsflMZPGBziPBP3TNn9jUgtOo4MmCPAKz_I28EK5MgYjM8SVu1C5qevT0aKF8KLyBqtEI6hDDpJYh6JqAV2PY9zRsPoXB9qppnP9AgJqnbvK1xchYuyf6hNQqSg7lCuC6kspnCcewTySvybDwTHCTRLwm78p87ZgMT72qU6sZIJakDZtH1zswJw1IN6oK6QB-D_8Dl20X8Xs6LS0rZ-xdrTUG6lYPOLbdRBqe5bXYuG_WQDbIv4FSrAwpLd5pnl0SXe2ps5cfA6KK7mXSyhNp3KAsmjGdQzdNCYu3wE4MYMU6bfmNXTT-m7e6LTPYAJUE10-QHu95FHZRMpbLHktvRuAOQgjf6VsLnHNHJZhjT-59fza3TILKeNLoJN6WmB40oNvOiYFCHK7GOVUdcgPnjSpbWxJsRy0Cmaa5Yhcs5XStMVxOPwPArajtVWT3YFPxwIQxrFkNpeMWfbj16F3S0hR6SbJ4Nq5chZk2WaCoDUflIPO7VW-64uZBw4-rvXdJWt8Nh83OVrfrVIQvjvlXkqr_EVzPknV3GsDvtblWiLjoQaHBRz-TES4NF3BcyGURPSCpsXLUQz8B2wD_o5K_DvCvfrHT-s-cBNRmyJAVp8mDvEVL7cW_imBFRsaVPmAL42qcGO-yLdU5NQv4Ssa42AGAUD9oLZr02VdusfmIs8IxjPwI3SpiX4BgWy0BHkVDBydJCyFXnvjterLquQovAK7deUXhcMlpoeTNE8x0VytFkzQGxIut9vB4-iFlFZsx9wM6mb7XHJbqsgz2h1y-4f2D6M5PeqEVmPD65RBC3fofClOzeBdpPDxK9CEoAvahewZ6qa5M58iqtQIwWYRLFf5ia_rpex_wB8dWUYIJYYZ-MDq497e7tLb-6AVahlsbIZPC0LjEy4frfHMx7h5drQDrbQ0tx3nhVd88CsRnYE7-FZxpgtvlwrH-l0_DrXWrWNWV8jsRE9ALVBBcXQuIFjSvQEHyGFV6wO8OG_Ydp_wQM5bMVLYp0uyVs2wu_7ocMMPGSZsphotSMiFeSHzxFB8no1hESjH81C3U0RCc9B_Y5NlZ8VZUaaOXy6UajpE4avYnKEknXDjs1G7xrxwkVmQ47PGHsMiuGlnO5ldHuqO9ZbyQtBV4LZnmThbw6_BKPY-m4fNRQh-4mSaZ0iJ40OW7DREt-zYCg-uoNaARKv5zPSEvXDbGb064N4do2zmGkOjQtPMkIU3kWGN1QQwLsAzvTcPcc-Kh07MDwxqgBUNyaKWTHh4jT8O14x726ey_pthXMjOed3QRpzvIXJyJvWvuTaIQq2By9xWBC44daM3tJUug_UJUuclBtChgtJ8oy_DiMgFxLy0AfASyPnIVwSQblvEUQNoXpk5BwrSyyOEAT65RWwk-SwteVnNaJwL_a9-iwSI2RrjSgYASijLHGHorDC9VLThIDje6uRa-wCT3MuPpf5N4peFS_DKCGKekcSuERlejM5FZL-qVn8h1QPzj1pQAl5J6wSsJ47zWkbqfbvfmP3zuByTNkoS5bKf6PHMC4X-hSpbPhqy7MMvZu88LT9oiJj4DCGoShVQRt6YhH1pfBFxipBl1oAaScJ6_QuGhdH99k63SEU8g7pf44Dm4v16bqBhg2_6gLPWGCl2y5vlcfkSIi1F-lDuGpW3fSCToEsLYwDw7ar2GYpPWC1U_tdOsIls6ZYiEdlmygUeSyeAsvWTBKEcPgxEpWSmcVbStShZ98OPraCEy514H5x4NVbfID3E8yg-Tlwi6o5_d7x1bLkBs37ra9BGHzCjucmNkcAlxDiVoOU4p5ETDaWlIa1x3OY__-i2117O1fRpXyiCqK_C1_cZbyG3YA6ZePZeG2YjR-sasfqX1W0a0YWJh2Cw4bBtdKG2oYRQPppk_sh6OZtNv8Xu-Mlox_DGN4oJ32bShwxSHzQwAkBOUmcXB_ohvnR1T1w3YEEXPjpOvZrrHdlNMmps3OoK93n51uGAwuWUcD__X8wjSKKDW70CUrJVxQZXK3HsgCiBnm6K0rhKiD05jg89ihsv3YvXLJoalEDAgtmeisyz4s6eRde6kt-cIQhRta1PPxO6kT2nEP53mb17FwkfFLK7h9VSqP81Arh22UNH0T-24VpDwdfbXv8wjdzxB30huk6mluyuFB8PjGZJj4R9drgelrntDZnhlGOaAEips4ylaPNtg6ieJEImZ9zQjvnDzyH8UPb0y_K5Hob2kOlFr2DW5hCetU83SIRQpAlwfpuAEOgsvVlnJE-Yw8adi6YBa79JQQfsytZG5zs2ZC4IM45eJKil13E6mzm-TeVi01qiJtbcE-5gcZc13zAKdnVFfVQAz5Tbq4ie135VuNYLcOjnZ6Hzi8xzsxO6AXbMnsvF8VuKSXLj2U8GzWIjOkLVU83ex9v1rlKMgOXUDw_GAzWO6dWnGkz-x5GHVWrVie3OJBs7efV_ppfUfGnJCp8FnnKaJcJybjpN_pSi4D1zLPKy39AHjFDiVzadnng8hBjkEqgffR8gxnOGpzvl3e4Gy-RxrPojjWRxUD3e_Gsmcg3kQkgjc-yV52_Ezjv86Nig39p7b9J1WyBx1drdIAB94NwxEAM2oN2BHjZ9XwDehv9XIHcBRanYjTtm4soFYCG6acPdwYZGxFFruSXeTpfJFj_NYIMh7WgAa-yuRWpFgFnnmX-VhjBj7AiNzYvpCr_4B6kWpk_GNEyGgeACdURKDXYt1jzxBPr3I2aqhmiYMd-L3dETn_0bupdkKQilIiAPGhPObXS8gi46474FT4JBfDDV3RElwS_OQg_1lQgiyhbK1fz210h65PdmhcyY8ZFBCxzchx9rulUbGVPIwQKVsVB-SSAxlrmqBD-vZfezm98nZcMMI0SFMQsYPZfNqiJ_624pDhGAozos8BW_XzMZjuRedJyGotQhyuy-bdyw219BscJfNwqa7ewrjB4e2qMlQn1XAG2yTqlkkbtw9xxSF509l0pkjHVjHFCZw_MLkQqfN0zjfNrZ-L0dF_wHQ9l7wj9JDUTlTSG-ZySKTSyqnhSCr69YTJ7pCsJX5XIvbSpHnj8Q0iSCTwRWaKKOCAw7cQQ6FJeKaNgwFwvBBWbf_8TA2jFNrtnebz7GqYSP6-CBTvbrOJAW-LDaHPeMqglknnKO4vQDhb-dmJrHwERiL1cESNqlLB77tjzjc9yGFFWQ-p-BXmE4It2EugOftVzeFU2qfubODqyYtyxafQqNeiuQXykVTq73_Q7k99qaB-VNdrIu55H9cN5A1HLmbmHlSFry_0btFDPKj9gkhWHDLVYUgBcMSY2gKgIVyaGz18TVecB8sM5W5ybCEtRTDhiMoiQ4m6SP-PdE0AB1FkRSGDWJqH32aj-AEyhkumJVFlDRIfT6j6lXfZ6P601yhhfdFV6bVgLKADrYaqKjCeRc0XnaYcMsgmR8tNBUIlV4KlLoKie72DpYmOnaw6ax7dqJLb_O3q1lsgGl-4Vtup8VJSMgj-jQzJa7_iXD6QRLIfSUo_XJOs15EeDxL7Bogu4D1OgX6zlxXKwYRko8inzkp2LQB4tlHqnaIyhyNT7nSKp5ZTyiV7kWSHLqgzmZp-vAoCviG9MIgThcvyTxJ7eIiPwGDyN6NXHLN2i1JbvwdyaAv8-VXU38SPkDoLH1gcj0fJNaLId4o2pX6DitxqQrZmm3TpY_twon5WmPKeF55vW1q0huR0fRAjzqLTbvB9rYlN-KT1Paii5NdfPfNyZ9BeNlpfqnjwGMuwaouQOwVqVSK0mnbWVVsMOuAFGP1EFR8GH-xqyJ6yIJ8HmcsafHfjVj7Aa-4LlcDuUtGHkfjOJrTPDqg05a8CcOwzscEUE_mrdTJa9yL7lNnauem3STKi9PcPrt5xPTfcZw_dKzfe17pnWQ6wM6FI5tSTbOQFrqd44Wyfx3xXRvFEkAEQWa4HhLTm5ztMk1xJvU0JwaM9_ssy25Y10vAv7T475l02SN03rwMP8Cw6goyhGeq_SyCgHOnJ7V9eLM47uDx5Zs2eXm8mO_nnWjjHDON8P5W3Dj6vcH7b1OFM8GMfwZYD50SyM7F7Xi7TbqpwAlJEb2FXaXwdd-_4VyViPQOs3c7UrrOQv9r21qxENvKGzhH8oBJs89GDw6iO0jlNgLQ4s-4atYGOgl8B2yr8JqBMCU4V_QEjeVTpcME5BeCIHaF9drhpyaSNYuZRmQrELtMPxqMjPrH-90gzTkdc5QMPwdtNYgv9PoPMd3EXBIwr08N3KjkFA378fZl8X4g89M-S1MZWFaPFpoQnFLJgY-dHQ18JxPhU5xOuLOT22Cl5rChL26u-55mhNkQ1Oa87zOIUPFKDW8ky_tzGwDBOXUGPh63XmcIHo5kIrdr2dz4EbKv7taxmThJ0wRImz0H1Ir0qpb6RTKBr4Uwq50Z5AzqcUyOjEREXftxtMWzZyDPpoCWIsiopFyDSKyc69NpORgGx8Im9IRLkpJfNi93HgiM5H4UMrZ1OkET7LwkbU0sDvpILSo3uxLvkYBJAZuSyBp8HiqYuQA8dq5CjEuyQmHGyZjJHxNTEi8m7iZJs1IXFWNpE007a4Gkdz1Bmt0eKCLdLWJBsgpj95_9CR6rgm05pDftRd7wpjkP-m78xU5g9iRIQWWSDpgjKxqwpao17_erDiyYvKyRma1wOVqcfCgaX9ItPmPywp9zsW1bcO5_BvPOEreReDhSPHiQ57iTWAimWLr5PYfWu014TSfCrXjqdsNoDjX16d8SJgyeYxo5t1zlYw-HvQ0dM5ykWmWOLsDN5UG_FFnbEDUDUR2ZhV5psLLOhRRUtyc_goTmh49ro9Xr-Ptpi9TnHnDE9Bzu9Q-iXEq53PxDSvcTG7FIZd3G8xZhgPQabP6emHSVcxxYu5gJ165LXp0VYydqF3m4X01Vg4Wy10KnI3jvY4aHd3F7nJxNoaOgNYSZ5LcOerJ8gzzysHK1qVyiGo7fGINRBm-cDdEg9sJeGfkUhU1x7Y0fElWg4S15eGz1VCVvzji7AV3wTAZFsWUKbIJViFtm9jn4w59ot38gUGMFyclBBOfUzIciH_X74hYTElCzCWoBh58UYfD6bLXy5c1FsQG9fIpJoJOAlL6zEI0wDlCs5HirsPXX99YYR1cI1lW_5m8GYNKbFMOWsEn0l3_tn3Y3ie8LPdrzW1JzghPbWOda2PDgYEToOnwjqg034wiOWvYeJHFsZ1grBVfVnRD1snvQ37xbnstPT7aJyoIfHYm64f7O-u_M4jd2xSspD6oFnnurNXH66C-ma8UowZJY9Qc2tJBsUyVqimbD6AJCuCApRMMuwYbSeYFyEPmCQozcPsEesV7IuPwMkXtQBc6wf3N4gTqiybf4L7SmmqIthr4n9EyPlk5ttM4k8PYJ8TbLmoorQ5HO9aqi-gWoq_sXO1kzqvLbXoQvt91k8GplM5__LLfHcMNE-P2MFVpcBrHFBkVydOiDEaM2V9Emqxu8ZSsNayM75y-qceS04ASSGVIOVUBERfMqNY0Kc-RZjf8fotPW4CozcW3Tc1Zd9jsaa-CiuukvfWzyyt9dvhuUJnnt7FUJTuCgaWEWTmooJSjiKVp0UJFxJ0-zBcWWrGir4nLfv4IO76OAnRNW89GT8DwylZYrR4yqwbvvZ3xhSit6pV1NSkfaAFqLfWZb34aAH39Sfvy8F0NeTX8afPBQB0kT3mkmcwxbcK6Wjx7gOE_qlZeXTWYjbtEXFqfISdzpapJplTnawWPlD9TBnBq535Bz2Dpt8tEisGICzNg5ozXCcM3s6pg-BTboP2EGs8gx7i3lGjnWAeJFRrwZljw4ed4DfPC9kM_CGRUBgOf7D7hdOXz79b789U3yR9FvdYLVRgaR1nJIPKwQBqcda_j_m41xeAZ5lQ9ii5bAr_I2cba0vp4X-w1XK8sLRbJdpuK1g3O6Yrv45z0hpy3RfPwMpMYUdyOsmKrFxe5ptTJ5kbPSD2OsDOP-aiyils9KfyKHGcols9Dok1li1bQcjycA1C8toEvf1xybfAyXp6iBnFY5TQ8j4oYj7Gv3MEsCEF2Hu1Yu28ELWFM2qeE7unuB16G7QoHq4X_iYI1m8kXAHVW-OsGlBZ0goTThk-30mFiVHAG_IL5uoqVngT6iZiSf2_dFXekw3LbmplLrzRV8ATA_uwDKKv5TdscPzSFuVunOpqi_UZpw9qt7g6tOmkU-Oa68_MwBFvyOjrT7epY8m3e_TVVtkfGYaF6CCBkAh3r0SzioXVUSkmWb0i1rojkS2b84Y8_57nggENC5akk9y69IS4xnMb9lOC25h9LEMK90g8zSkF_zVIrQKGWCODuEwsIDnST8KL8i2DBdLus9ATPaP9vO89Fv3Kac4oK3gKdhpLQWfhXy341DjGV-anrvkTko7lIjVwj9X6qiTHX5gOSdTKuxyWCIrvpj_yI5iflLLm1XWbD_qs8ycVc4cCUF9r4cE_9_FEdxRXL8qnZowJO7AAm9zJhZy8Ef74uvaA7o91PpgSOg4JR4VPRl45hAv2fPVorX-orp_kZ9kl3wPxTO-iF76QpOW0CvrcY4-fsaHdd2p0hoKVwYYLNYAm219XzQM41201VSD97FRCjYGRqSDF_ePjmrqj2akSdYnySuFdsKi45LsfdGD8g_9OBeb2-KF9r7rMW2TRUx1XFNwp5YbULCccnKa5PGCFtrBR-11AflBYvtgpksi5A7KuzI_0dUKLWidR29o_uEZUQK63iuZ7olAKZmMMy3WKHT5cK52eDJ0UcR_4jP9FG0mrVgMwT48jjC4DUrrou2nn9uopuwLCmyZK5ss224a69K4DwIGhMMOvpf0ZZDGjWtSbdsG5eGh9VXZnrDWK-17HHrMyKt0c0fG0Xt8W_kgabg1iWSk7wi1eYzU-xvs8Zj44aZXlL159wsPbN8CHRJ62loTJkjWTrvUoU8pLCN31Ts_HqarJH0M84GYSxE7iTP9mvl2kA7vFX5c8X0czXOOCJpgD0kmVDelPzSnPmvrkBN_8KW4xZymctuevdmtur5puCPej-m6_hZPc0VCb6mFIPpdKK-WrHINPm8a3n3EFQ-b0eJ284IszvdBMQGGPA4iWbi4vFWaWY6B4Cov4tW-Lk09_Tv4PSt-Ejp5xPdbEZVhOAL6Is1T9BkWL9cMwQdhpFzekVudqmpYJdo50pvxFpkuKjqND73pQ9O_6TFcImKn_5YBx9Bm5eVJ6Ni2-gdMk5KIz3IvM_K7V5jHl9Rxw-fJ16AzIq94Gy5kOyOrxNMXeUQ_hoelFcu4MGlzVJDs_qKreF0bbpDoljYFppvSwxV2TnV3m5GzQ8HeIGgQbSPcNL3nMB39Pqawg1kSchHs9uH9A07N7VqE6YtxCwuNV8ZuASTHaYFNNItqVBX7p0Q2wBfa0ymp_NbKk7QhK32g40VRYgfr72P6urPETlMUQJ6Sr74MKTD2k8wARekroxbOXBP2rJ_d6X8ogjBk1yy6w0XC26CWHwabDftRXKfusk2SGxcoi27oj-BrxQfXYmgeqxWIxZRwW3H2IRskXNOJJGsXhJXzVyAuNqhCJ_MxeML5CNNNF2olvdXDm5C_Kxdvrumaf_hN_YFSEDQ4tyNbEOP2zjW6BI54jHKJQAv6vlNRG43loiRfQ4Zvf1IQyJjLEVFO2at3JBf9BPY7nGjr85NrTJK5-TzbvIEeSYEoqO17VU9J4dOj33VrOfmt0tzrJ5maVGc5aOQ-NAdxnbA6qqxvSPlzqLgFv7mrjm0DLDjBFrCTDJAR5i6pOy4VqHFjQCns0NGauzLoQYIDXnfqNwJsnT3oU3bA1Q8YWsdKy6xROmxy62PYl9nvcaRF0CCapSJ6GEq8AmcnBpubJN1-zt8vdSHsplS4rWGu67O7UwEL081JUhO20AudjiJ9_7ReVTlGj5ItE7YLLomRDShKOPVrBcaV8C6M03EEcCgE4ZH5UtrmSR3SArXM4E1S1ES1aSBFFgACDSLdjwv7wvvPVO1fIXkOa8U56OSAkNCHguLKCIEyXGk_2b-MPAAHv3-Bh7fki8kPo08cbr-RCHETF3KlNofyWxTiprhUUjvmQqthMVh4XmuSMNOe9BotzW6-Lf1EpGZbnr-fb-UGAmN4HKBHnlbOLgrd8wMr7S5UDfCENeiw8KsNzNq7FnkGCWD1lOztAesii3WCoo-_nEkDGQhjI50X4HXMURFxXQUrwuq8ZcWz9T5OIBhcj4E0nRm-6LPLlDPWJ6_bv_GjgAYYdeQsDQpJ_2CNte7Md0fYUeaalv4Ag6ZQy8vrzNeB9f4FqxB7q7ZhRtG7cRqjBCGGHa-Fe3O3JxouS1S3KyzurpReeiLDD3YT6WsPkA-vLI9dgptKfXQwKnLaXnL_V-FUEALsT3ML-tktKUAf_HhgQBC1WCkc0UbvvWud8L5B4g1uNwKdIMEyIPsGQmcQ5WjWJvdT6V9ZIbwbWp6wQxCaG3Ng9lNSq4cVi-r7tMCKWhGGSqgeNIpE4rX1PjOAlia6ncL9IG_n1wkpirAxpekFAuu6H5MQkQgFB41giMNBOVsYXdRxmVgr9KqCbWSTDcyZpK6uknzmEUeYQWpVDSep3ysGsgK_5-Rohbab2t-mHDre39KlILdoRVtAXUjlmlThgcVY81xPJyVGRTQXVA-zTMeRvJAdV8fA7KTdaEy9TOgJkgmnGdCKPHqpaZKARkFGCEB6NyK6Fy1MVbCumRlqA_g3KB1nm4ST3QCzkSgSArpgPvIs_7zDsth0u9yOTpkGcwqkso19cFlkOwBE5hTrz3gYkkYn6Zc-vJ3DX2kfFZR-RTwlqie3Tz8enyZEZyR846eBEFbahbbW53l4sc0VCCTaHeevuz1u608QV9LHG1enSDJhHlnv17QHfAowR7bkaivH3lysRbiiHz43mfy2z5bfC_0nKLZdzYJH2YXsqSPg0hwUeXHVYPAn4CfbBQfwdas8kK9B5VqRwMewTUYNfK2Bpb0zI0T-i96GxD6ehxTZ3A8_PVhcCHU0VGKOsppVSEoib7gIXVDfnqefquKUxW69dYgdbDU7DI0kxSND_8HunhgHetXowRkRAK-eLSTRo0EPL74LJZCE5Op7vzYJurlyNe_6zQkDOrvh0tKhxjHxE3MLWc7O8sHhEBHLBT08bPd9VZtu8peEUuCAzA6w_2ghIPjDmby6QZrd1N8dyC-tWgnONLUWhIfxV4G9clVN6V8DCBjpDDesFFeBrsq__CehFFsq3cSh_mxcutTQtP36_QSEvkD2ILXQw1xMG3MWPHPTzSM2h7gA05CXFvTwxxFtP6Elp51FLlWGfdeSRg7rjlHQ0ZroEuvLVvmHQhNHX_JsJ-QJpLD7d3UVU_vmkD2IxB49FGis-kNQrHLWO_BDERQ_V2C3r3b9QJsTmq2qt0M3-g-x2Lmty86uqpxdQ4QQTkrlv6VJ4FPGSLScElNwJEABQPqZxi68wGPdguCCUwbWSbSP99WcIQGtru2vtC-WidKoj51nb90jPdhoJkMimIkFBNi8aKu1aS4a34m7Msdt36ek31hJfBL7_WWIYL23ZNd68GVBEhu6MyfWB9EcL1pUvUMhxpWwlRZnpsMptSPqfA9X36IKYfAz--Skar6d-LB4o_2YSDy2sbhw9HiIcIhINEyXhSX0ny3JGdmyWaJ-J90F1axO8ZToawzxPgni9FH9xHVfvI1GqBQIJPig4yn0NY-KI21pIR5TIco6848fcZiNR1354AbILLf_vgzkCpo-8iJv1VvolaBBtWbvb-VtjnLbkEiKTfIR11mJR79khOcKGD7-uApZrMH364Xij2EaU6XBe0Pf_1VRHBbZJKqfYZg5pEXJJnDSaJPrHJDOmPENXI0K640mFqd75OZCs3lV9HMrWrMoV9Ezp2wRqMrdUNJqol8fQmeEzAImRmyJCTYj2quhXbZR-xpQ9eLZ-LSAzVY6FmY5VUJiCyxjaZfTD75fHX73jpot7KcucXLcJtQMNLN3nGafzl9j0bPywqufSdxSmlQZdkaPhKGDG0Ebq1vT_g36VpgKUDBBnR58IL_AXCyRqAyouRFRcK401l1B4pYAcBwaG4cRLzF3-QBMqeVAdUI7S9_Zfv9B41kpRYva7xP3GFiDM8ujQ6E8h7qYpP90_2JAtqzpZYYrX0a_ktls_sbvfLmLqEs1zw3HZbzZuPcdKZcuGXu6Ow8DCAqcv5kg4ZGnwYXTNw-iN6r0AHRhiH26qnYiyJ7nL7ZdodnNyYyL7vUJ0nx2CbU3QVTgY8eu_oY_iWGWspp5DLsGcmTq1PILSUsBoL1iKuUA2Gbjo8kEjDPd0HXNXwe3Epdh7J4K_EhkW6Whlv2k2ZwV9YkgevnJGnQkKlL5pfXmEyUsWIgrdC0wV_5Znp4CSzcLG7mnQivNyvmdCFoGlWxyYqxjTxOGRjI4SsmPPCBFNLuModnBES5oFzUvLNrPWubpNOG_YzQ-kmDJ9BhGi8ki5TQ-cuHtdV2sBjyw0sgXJMhuelbgIl5I68jhSD9khCzmMSowXvauPPO4p753hEDH7LQxVwdDIVeHmMCNoKEwu_X4rlbLRwEIT0oYbxKpFIo40rJ5_Hg0wP7SZ9ojQVgbjeT5QwKFxGKMUwnmXientICZzUmgZDAHkvnoZ554CGSE6Pe4VtGtaDcfteJQDa6lyAR31yS0OlOuNGPe8jFEwHEfPzMlvfjmQ0wj58PeWCg8hAWgbvOJXEn_a5ieReq3aD_XDO2Y4cwylsd0kPaSdlEA-JQpOIVZnbCzSVq068Zsc14td6J0XCEz-PcWthdgVdfa3sTZLQ-mx1VGtCIGkLMckyPwNz_AApY13EkaGzYTa0uj1Du6oglOlTp8Abb7me93z0bsuCCrihD7vZmLDN0gmHlvQJMP4hLosYLefDvufUBzsVSjnTltJ7MtKfWhhimB9TUsKon3esBn04sNHjCjXo8IT9avUsq28RmLOwOe2F4DDxq_UntI9p0rGTnUAJ8OaR9x-akD7TGQbBVXJvmXOlfIzIx2a-LtDSWH9vDYmJEmf4XjrtmK2Jv8FI3pVo8eSHjvE9dFkepiMmmLJeGqFYVM2K1dD-x2x6Hw4hPSvJrVdZ3ETNDRdk2vB00LZre1dY_-iw4lD_FZwqs8vVDlOyWbfqaexYtSbDAkb8Wm6DwV60_4f05owZh_z8FBZvHoV4D44DLnTElIV6w6YkaQf6k70XaG7XmGHwUhKh9taGOT6r0MZ86aAZn1BG74UVj9k09RNM7IHMcH2ShurfmCRdJ9VMXwuyioOOnTsnw4v3ugj14hYT4vzNtSEhoxFAM_xZOkiJrFDNMEOFCVVyudent9bdtZ9ah-kD9IYImCHUtUlqWWjaAEXELWYf37pU3j7FNMM0DloPDamAcVEwJm_6QgMNO_S2L0ujDp7jEvZN6_7xl0nrK5uKM3hFGfuhFAzC4XJhUAh00lui_GI5AtGisYE5flaHNqALrIgHqvYovfaaweh_gilL7hbXpHwvHWYA5a4Nr-Ij0rjIP1FyZmTA1tm4V9Zm59kflnC4iGK13L0SOeH-loBsGRhjjormbxDvj83rzitMCD_amAhsM9RlkaLz5xCwT32ZshpOdvQQzX7Jpqa-fY14XjSR4UCEaSD244Ryr3mY1scjx25r99wgtWzcpDmpwgR26h2g3_jngDWIyF5oJX7f5mqdUFzlD79-Oi5dVNVxOJuknRsNPvTTaFvQa0FXq0uyzEZqXVfvE4KDR-zo0JF31_AVhE_iu5Y2A-jVUi6RkpqohkOrLoa5DpPBpFXf_Rrw2DTWINjzU4xmtTpcIHCsaxTmCy0EbpEJ1QF3iKRwPCnwcizzLMtKQ66FgkIgYUt9Tpbqf4GC3h0Hl8gBjE6R2leuGtXIqqU8nbn3yscFtMeNAyMTZd5tePyqfossoNervu4n3FSkI8GizdcxZyRhC0cplP8KWHE1hj9Qr26pMZJYagDLg6EvIHpcD9TqMgMx-dU0W4kDS1JvayFR58-NSpfoyevPuG5ni6OJ2ZOb-xDY2N1zIKachokwaYJM44PPD-vLNlURIsAE1AJubWbRe4Z0y0_KRk3x-nAIicn7RjP9EhLDwvkLjeIM79ukyaUhgpkfGZZrGymJj9sfvk8FhsJJF8YB36GIhpDztBM-7Zj1jz0nZmXeChFQGaORkTw-6RZflanXedpCt26ylX7_0wswYYDMQ6NRAimGxXFj-u-Utp0FTcfuxda7COHK9ZwJPORzblw7glCMF6Fq9pQed1A6TKlGx_11J0D0CC6HttBdQXNCe6Wo9TPzLHolVHRdgqkqn4yP-MyANHJ4xLhiewg0xNg96ShD871P-T3VOcN_M_q2zZCoYhhQHJk27CnAgmj4jORGE8kNsBRN1AJ9mDniJaKDWpHcInzmaTvRfrm9jkYlzbJrvgVcRP1mZWMEpzRODJP0Ik1tke2JubYkd3d1FrGNbdA_SUz77hb32EGsl_aFtMYQvAp6qPSLrky6gY8FGGa_E5p_PmYz4FqoHrnnreLfyYGBCT4HYkpSc2RQKff7oC1pgfctXa3iqjkCF1eYaJmm582Rv3kInIik2gcQOpDLj_tFlmRwYYW4r7MP3Y27PdWIxoJ9TcXiKYezFLMRiHXplFAZhESNxZBHEOH3i9GfOoc3yWvlaaNWr1pFKmvr_4AkaKOmEmAPCasJl97LBzxt4_FMSisMYLlqg284zKLTAQSPzvu1KMY8qTSx8SYNh07ZQUlpuxSvxCwKM6GQfNOGlB5wL9WYb-p0_2Tl8gFIazvgBBLrkrHlHqGjHW8bZ3n1Cfat6AGjX78wqSGyjqi5k3Zob29T1QsHCIpibtjJrwSedNsmjl0ZPXCgZ3OUmZ5V0hDUquJJw-2E-PnKiDTLEeRYOpzAsA6gEXEFcpKQD_UK9XIc7v82j9Hi8VdF6bfIBqZ0wHA_UXLf9bSodFxby0lGWDvZYvufrt3JtcUqREfEaDdpEO0Hq9nxs47cGLjn6g8b0T8kesW6uRHAvII5SkmAYNA7dtJt4oEuwxXaxCl0BaiCF5iq79JK5m5YH35k0svGQ7_4SpxRJe7kc6MwP12TVq34s1YmwSfWiMtgu7GClQw4AnXFyQV1zhjzNdZOFclvxdM4fFPIoj1KXdYAVaGej8FovP0S8806DP-7cUQDOwOMJf6sMv0b9kEX0yjx9xs7xmarW8ArAWNt9Vnuzp_VdQDJYcjOK9WR9dtdqpLv8iicF_yH-vcfgWTnPOGKWoWMMOEG_GPgdfpHOP0m75WELuRHvGpT2tLN0yUASMerOVEhFG3qs9jA-G2OuWK1-AXqgULcomeocXeJatic1W7_VlY5SEJ8BmR5e8zXP3pC3cP1AK-tOKNCjHHZ8q6cz0qD4XKsQpQRLMlNCvERzvRughMur3wNEnn4Ryk7V8CZUqHxxOMMCwho3ikVk5JPorA4vXFqmXCKuEEauXAic1jhNsSs1r0M2W99jxVSE2msuTuxm1c8nyF3EbzBadzo6MGOrbryPkceSiedg4lY12uoU5wmSLK7C7wBt3eUeWyFf4-_1eTLRbaSacntDADoD7TFIxjHqJGUlKm0H7N9Om7W034RvGGeRlU-REZvOXUEi4WAk8sGemc8W7fJzapLUYX6B_hGAMRuNSxSOD_dlIgauQrPb0TVqyYCQamOEm1elptN0KXAXoecnWVCkzRT0INfvxjLSl5zp8zPcXR8FgubVzEk5d4hOC7FEs3DFGLsA0hAPzRyOL8r96NcQQejj34mq-tjStR7FDcV_6rsHZHI0Pdk7zDG3_xZGrigo19UpKuSN91gMkqLMCTGbWOQfG5tFytt0-e-JBMSsA7m9WhZOMpQC1m5tDlHDYM7oKRsvBIJH0-29qrVrfhTjWE6P87XxqmNCwVlV_YPuGZ8nHeh9yu1n__snZaL75u9JDOapSi6quzWbXPBXhQe49vvC0gszo6Ah-HyE2jbru30HvIfDzfDTmbQN_hxj81m7j4lMbzXUQYf-l_a7SNOJnyXo3tbHoJpyIhibpEcsDlGEfxY9s-_mW2fV4iMywUhcAF5NoiqtKQ9Sd361Fmx7rqGAuxyoOtZNJ1Ci78P0JfdkXLVI43RJaw06StjeUtWkoD4QLMkK18fXgbVP63X20VSIT8JRvFYtlL6RXJi-Fo1ifFU38uyRf_QrAVufjQfeKD09NrLQxTJ6kIvmHVF0Q_a3Ughd5XKlVOjLJk95g3ItkgKrdriA85yPLuI39cIS6AfPNWmNu1Gqly6F2oa2-71kUSOQz-Ee_zhR6kahqD885sfgxwtDZRoX8hLJRcnAMwvEdlNUGDN00Ca3OShdr-jSd23D4l5z0On-IBCVop5B99QvSmvaQcFyAJVZtsymmuS-_Gn5zOHR7HIX5jIwmhUsadMPQmyOgv29gusXBu67qrEuHvd3tph9IMcOchpEdB3X-3OEbLCnVu_JTc83fpN1vNQxQjj7A2O_zAdOvVeSqrKpZsaw2GYkEiZjKpnnXFBfm8KPe54RWnfnVqZYZPy_jg5D4ONCdYsJjt3E_t4d0_EPKaSjtxH-d_k6mcjiqevfg3G5AFb_u8xEm9vheO_JaPsmfeJwVVlubt9DoSFGfE4ITFWbYio5oI7jkjcN_tyfGa63a9RkPX-z_4yvtt_O5zRSIu74fnXqou-dt3QakGnBvmMBplwi8oAdByDJsB2BJO9t7_aSodAm6vpcR0UpD44ryE5dVy1GMlNz5EQcnCuJ5gXTxuOf4glalO8tjMt6yr86FmF8TlSH9-J4-f1AUcZXyNHCZf8EmxRoowWdI0vSWeJf_h1S-QoDit1P6pWLtuV7bSxiJpIE4ezgcVTJfcEJmm5aiQIRleGDWUI6rnA1CxhoUE0Kr-nl7ZP8ZNtNyx4mMsdIbtM1ZFuLF-vCKNyZOPsrUN6jpIb2fCMl9YjWR3ocy73bfIElEE3WwZ-jsB71KLaLQKYli7FjdPUq94cYLGSsXq5QCNMkPbt56rDNt7QuY4_6uqlavZm3MNFCmbEQdvNYW71v07doITpN4d4Mx_0U6Su4-yopVCgIpO1nT7iy08yYLawYTzSh54s8OrenJLTi63OQrDd4vGF0XpG73p4StyWs26pVY234jEv_U_lqdCQb0JnwkgWNU5cGWXNGT5Pzx69liLIzKcHKBGquq5ZlSQebQrd_a5JUp22ineRjgMQfzdGO5nFdJTH36nNbAMQrIOsn8XgXiUdswLy9-X7VykJI646D2mFVCMmLjZ37LrKyEi6fUgzxwoy97BGpCOggyQvQwoVTaIfU3-z9Z62fFCn83VPHDN6m45yFqHgX5NxI-XblKxDYs5oqg5ZU3KjyOXTKisOBhfJsN1f-NXOOuDPpO8kkl8Gs1khereJ2TYOPNREbXJB6eCFPGGKXdcSKzf5jBDi1pKmNCYiZsOTzUJVd7ermlwr9InbOYnDa9nB0VHuRvgrqRlIqvA7wgZMZbVMHNs8cXLsgi6gkNFpqLbw27ItIDJTuEX3FhppGAavvH7rigzwzZB3ENL9JEt_0HvnhSYLzw5dHPcFqGLwPkxQdWPA9_lJ_dOJtbV6_zrLUmnrpbopyod-IbXPTZ3VSeJHZFKvy2GMmfy7PoAkvXvDyMbHeEv35nMQms7x-3tbGfKKxzs8UbdkCJEqR4xHjogdIZ5AmiRHI5AY3hdvA9K-6zZjS9ID3AxUzOavscF4s1D0q-lkCRtAr1IUlpSRF6rbG4p89J4hhOmuZmWcox8NpaQL0h9iPdg6DAIdrYjfELkNdvS-MfPju0oBex4MrGt1sA8Zzxz-d4w1zyhhtHj2O0kEe9LJDZtQGKAH0XZsxTFw0JIDPtI8pmGSp9IttYhdCB_3MMZdXqbNqUVQVlvHtX5zw8pj-kHZHa9hhwsJ3UtrM3t8Lq2ymgDaYa5Ievv3gL2S0ZbdNTQcm5UTUU5JPZqGGoEhi-f-eiSEzdrMdesfcTsq58KKL6xE26tFmN-C40kXEItguPWYfJwTKKNUb4kFf3rPyCHOSa9SA0X4kmGR_ZMCp380MGOAYYKfCMQZoYu_Jk9eHL5XqMVLU_mmdJ1EbZQSP_AujAK5fK0UsmjFVgpIKfBA-Ej_zmf-XBw5n_x9UpDjAUWLM5FXfr6ilGLpdySH__XfWQpswlSqiotkgwal1YzgonDM4rsnkh6PqcBN4bIZ2YDEvYGbQ1iD2ys42FiRNdZRpVY8SmfkKqfi413odXiySbpgbVR3sjTwiGBrIbAGvPYQspBfOcQbc1NBKd0hHqq7qGlcee4Rnl_A0gELlCU8vlryZo_CSN9eqz_nZtDjTF9yKRfpR0AzhliqGmLxz9pC7BGNtMBt4cOspC9RFO8mh-wExyKuT3u873DZ1i5wCr9pSH4ATUL0ZxkZtxshGeuNWR5BG3_7-vNanC7f0XV3Prn87oK1p2k77nB585337MlmsIE3VQ7owwOVYB6flg6ecBXPWPq7rj4Pxn5z_z4VOyvJR9pIjEeeWMcSut6f5l8-Tt4WfKFmCiIBa40-2Lx5OCoJxtpXzP7euUwIrVk_vGmj60aXMoNQ1O0CTzTHGzoEcwV3jqVNbVqmK50CIQbpLhK009lWjgSEtLm5GteeafzI6NEA65j3ruj82hnFWG5h7kgFE9hZgYFQmm8GFcYBzKs9xuXqcpSmpxg3AfmfZNB22zKCCvd0Oc93Qo2SwGXreBdaVYK5Vx-3dQJrInSKzbd2A1ptOQPJS8ABiCT-hNYa_Pc5frTXW8mqgK-cuM5lvrQgdUnVh1ek_giGU1iPUAxo8Vkc5b55YZevMlEABwgG3a7HBn6aMgudvFDLmX29EUzDh_T45WlijSw6y7iWnYwX2QkO1cPpQVDc-BwUYg_2Pjb2BU5jMov3tjTmCP4FrBsTyCLuFYqvlkieFWVArzYMJViFyofDbsUMPQ3XVlSBizvnmIX318fwacQXCaItoMO1FvjhRYi2ClC5wVvFakCheSCDkCliU-fwWf6yJI2UNXv4puO8XiPwHSreeIQv5loaQKcfkvD04YL2sfKxKg4BZwulMgiL5aGTpVb5iDLbsRhCle2ID17tq1twukNNd8kJOjOJxII1IOP8O38pUWwnsZw22okOJwyLyxxcmmCsoftieXRo0j-uCAwA_kxC7IjTqHcdET8Xr38p1haE561s1hGqFxj77J_ZBpf_fmFBHuymvkVvkW1jvN4_VJF-CXDVCa9g7cE1CL7NoH6w5jDioeBfzYgT47DLxrbfNqFbysvbic6EIMFY3ZeuNnfEjZqj2bPtoVS6xIKrwA_BZlGVsNEdLsix5Lw7u4V27T-gObs-_NFKRyE3Z73_FcQNtcAyfsRmSr4r8rstD6o20slGhOuveIl9lZ6FKIfoLSCUjcgCCHnH_43o3d83dr4RUqmAx9dvvISXROony7AHb3Hf1IJODEiB5EE-KI7X3nnLgzRoiql4S3M-ueRtJ_0FeVECgaF5jgcSlces4EzTVQsd7yiubdbBxpZ62NwEHOYyubg2RZUyXdJ-6cEzxZZVgowOD3a3OvSjO8eK5RyMhZsKHyA1sHjdc-9xJsSXfNQwUTbkQrOQdi-eo="
+        },
+        {
+          "arguments": "{\"command\":\"cat > /plan.md <<'PLAN_EOF'\\n## Root cause\\n`HPacker` delegates cross-axis alignment to `matplotlib.offsetbox._get_aligned_offsets()`. In that helper (in `lib/matplotlib/offsetbox.py`), the `align` branches map `\\\"top\\\"` to the same formula as `\\\"left\\\"` (offset = `d`) and `\\\"bottom\\\"` to the same formula as `\\\"right\\\"` (offset = `height - h + d`). For vertical alignment (the `HPacker` case), those formulas are opposite of the intended semantics, so `top` and `bottom` are effectively swapped.\\n\\n## Changes\\n- `lib/matplotlib/offsetbox.py` :: `_get_aligned_offsets` \u2014 swap the `top`/`bottom` handling in the non-baseline branches:\\n  - `\\\"bottom\\\"` must use the current `offsets = [d for h, d in hd_list]` behavior.\\n  - `\\\"top\\\"` must use the current `offsets = [height - h + d for h, d in hd_list]` behavior.\\n  - Keep `left`/`right` behavior unchanged (`left -> d`, `right -> height - h + d`), i.e. adjust branch membership rather than formulas.\\n- `lib/matplotlib/tests/test_offsetbox.py` :: add a regression test for HPacker alignment (new test function, e.g. `test_hpacker_top_bottom_alignment`) that constructs two `DrawingArea`s of different heights and asserts:\\n  - `HPacker(..., align=\\\"bottom\\\")` gives equal y-offsets (common bottom edge).\\n  - `HPacker(..., align=\\\"top\\\")` shifts the shorter child upward by exactly `max_height - child_height`.\\n  Use `get_extent_offsets(renderer)` and compare extracted y-offsets with `assert_allclose`.\\n  (Add `HPacker` to the existing imports in this test module.)\\n\\n## Verification\\n1. Run the targeted test module: `python -m pytest lib/matplotlib/tests/test_offsetbox.py -k hpacker_top_bottom_alignment`.\\n2. Run full offsetbox tests: `python -m pytest lib/matplotlib/tests/test_offsetbox.py`.\\n3. Manually run the reproducer from the bug report and confirm:\\n   - `align=\\\"bottom\\\"` aligns the two rectangles on their bottom edge.\\n   - `align=\\\"top\\\"` aligns them on their top edge.\\nPLAN_EOF\"}",
+          "call_id": "call_yBiHIRXWV6fXFekFcIvStbG9",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a0e56930e7ef34c006a67fd77505c819584df548701b39613",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 11114,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 8704,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 4980,
+        "output_tokens_details": {
+          "reasoning_tokens": 4425,
+          "text_tokens": null
+        },
+        "total_tokens": 16094,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785199995,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cat > /plan.md <<'PLAN_EOF'\n## Root cause\n`HPacker` delegates cross-axis alignment to `matplotlib.offsetbox._get_aligned_offsets()`. In that helper (in `lib/matplotlib/offsetbox.py`), the `align` branches map `\"top\"` to the same formula as `\"left\"` (offset = `d`) and `\"bottom\"` to the same formula as `\"right\"` (offset = `height - h + d`). For vertical alignment (the `HPacker` case), those formulas are opposite of the intended semantics, so `top` and `bottom` are effectively swapped.\n\n## Changes\n- `lib/matplotlib/offsetbox.py` :: `_get_aligned_offsets` \u2014 swap the `top`/`bottom` handling in the non-baseline branches:\n  - `\"bottom\"` must use the current `offsets = [d for h, d in hd_list]` behavior.\n  - `\"top\"` must use the current `offsets = [height - h + d for h, d in hd_list]` behavior.\n  - Keep `left`/`right` behavior unchanged (`left -> d`, `right -> height - h + d`), i.e. adjust branch membership rather than formulas.\n- `lib/matplotlib/tests/test_offsetbox.py` :: add a regression test for HPacker alignment (new test function, e.g. `test_hpacker_top_bottom_alignment`) that constructs two `DrawingArea`s of different heights and asserts:\n  - `HPacker(..., align=\"bottom\")` gives equal y-offsets (common bottom edge).\n  - `HPacker(..., align=\"top\")` shifts the shorter child upward by exactly `max_height - child_height`.\n  Use `get_extent_offsets(renderer)` and compare extracted y-offsets with `assert_allclose`.\n  (Add `HPacker` to the existing imports in this test module.)\n\n## Verification\n1. Run the targeted test module: `python -m pytest lib/matplotlib/tests/test_offsetbox.py -k hpacker_top_bottom_alignment`.\n2. Run full offsetbox tests: `python -m pytest lib/matplotlib/tests/test_offsetbox.py`.\n3. Manually run the reproducer from the bug report and confirm:\n   - `align=\"bottom\"` aligns the two rectangles on their bottom edge.\n   - `align=\"top\"` aligns them on their top edge.\nPLAN_EOF",
+            "tool_call_id": "call_yBiHIRXWV6fXFekFcIvStbG9"
+          }
+        ],
+        "cost": 0.0754607,
+        "timestamp": 1785199996.1744118
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "",
+        "returncode": 0,
+        "timestamp": 1785199996.2990441,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_yBiHIRXWV6fXFekFcIvStbG9",
+      "output": "<returncode>0</returncode>\n<output>\n</output>"
+    },
+    {
+      "role": "exit",
+      "content": "PlanComplete",
+      "extra": {
+        "exit_status": "PlanComplete",
+        "submission": "## Root cause\n`HPacker` delegates cross-axis alignment to `matplotlib.offsetbox._get_aligned_offsets()`. In that helper (in `lib/matplotlib/offsetbox.py`), the `align` branches map `\"top\"` to the same formula as `\"left\"` (offset = `d`) and `\"bottom\"` to the same formula as `\"right\"` (offset = `height - h + d`). For vertical alignment (the `HPacker` case), those formulas are opposite of the intended semantics, so `top` and `bottom` are effectively swapped.\n\n## Changes\n- `lib/matplotlib/offsetbox.py` :: `_get_aligned_offsets` \u2014 swap the `top`/`bottom` handling in the non-baseline branches:\n  - `\"bottom\"` must use the current `offsets = [d for h, d in hd_list]` behavior.\n  - `\"top\"` must use the current `offsets = [height - h + d for h, d in hd_list]` behavior.\n  - Keep `left`/`right` behavior unchanged (`left -> d`, `right -> height - h + d`), i.e. adjust branch membership rather than formulas.\n- `lib/matplotlib/tests/test_offsetbox.py` :: add a regression test for HPacker alignment (new test function, e.g. `test_hpacker_top_bottom_alignment`) that constructs two `DrawingArea`s of different heights and asserts:\n  - `HPacker(..., align=\"bottom\")` gives equal y-offsets (common bottom edge).\n  - `HPacker(..., align=\"top\")` shifts the shorter child upward by exactly `max_height - child_height`.\n  Use `get_extent_offsets(renderer)` and compare extracted y-offsets with `assert_allclose`.\n  (Add `HPacker` to the existing imports in this test module.)\n\n## Verification\n1. Run the targeted test module: `python -m pytest lib/matplotlib/tests/test_offsetbox.py -k hpacker_top_bottom_alignment`.\n2. Run full offsetbox tests: `python -m pytest lib/matplotlib/tests/test_offsetbox.py`.\n3. Manually run the reproducer from the bug report and confirm:\n   - `align=\"bottom\"` aligns the two rectangles on their bottom edge.\n   - `align=\"top\"` aligns them on their top edge."
+      }
+    }
+  ],
+  "trajectory_format": "mini-swe-agent-1.1"
+}

@@ -166,6 +166,8 @@ def main() -> None:
     ap.add_argument("--strong-model", default=DEFAULT_STRONG)
     ap.add_argument("--effort", default="high", help="reasoning_effort held constant across tiers")
     ap.add_argument("--cheap-only", action="store_true", help="run + score only the cheap tier (verify-first)")
+    ap.add_argument("--strong-only", action="store_true",
+                    help="run + score only the strong tier on ALL sample tasks (for an all-strong baseline)")
     ap.add_argument("--step-limit", type=int, default=100)
     ap.add_argument("--wall-time", type=int, default=1800)
     ap.add_argument("--cost-limit", type=float, default=5.0, help="per-task USD guard")
@@ -179,6 +181,19 @@ def main() -> None:
 
     all_rows = {r["instance_id"]: r for r in load_dataset(DATASET, split="test") if r["instance_id"] in ids}
     instances = [all_rows[i] for i in sample["instance_ids"]]
+
+    # --strong-only: run the strong tier on ALL sample tasks (all-strong baseline)
+    if args.strong_only:
+        strong_results = run_phase(instances, "strong", args.strong_model, args.effort, out_dir,
+                                   args.workers, args.step_limit, args.wall_time, args.cost_limit)
+        resolved_strong = evaluate(out_dir / "preds.strong.json", list(ids),
+                                   f"strong_{out_dir.name}_{int(time.time())}", out_dir, args.workers)
+        strong_cost = sum(r["cost_usd"] for r in strong_results.values())
+        print(f"\n--strong-only: strong tier solves {len(resolved_strong)}/{len(ids)} "
+              f"({100*len(resolved_strong)/len(ids):.0f}%)  cost ${strong_cost:.2f}")
+        json.dump({"resolved_strong": sorted(resolved_strong), "strong_cost": round(strong_cost, 2)},
+                  open(out_dir / "strong_only.json", "w"), indent=2)
+        return
 
     # Phase A + B: cheap tier
     cheap_results = run_phase(instances, "cheap", args.cheap_model, args.effort, out_dir,

@@ -1,92 +1,94 @@
-# CascadeLM — Product Spec: a test-gated model cascade
+# CascadeLM — Product Spec: Plan-then-Execute (strong plans, cheap executes)
 
-*Status: draft, grounded in an n=60 SWE-bench Verified run (two proportional samples of 30). CIs are still wide (~±10%) at this n.*
+*Status: grounded in an n=60 SWE-bench Verified run (two proportional samples of 30) plus follow-up runs. n=60 is small — success differences are within noise, so the headline claims lean on the (robust) cost result, not fractional success deltas.*
 
 ## One-line
 
-An OpenAI-compatible proxy that runs a **cheap coding model first**, checks whether its patch **passes the user's tests**, and **escalates to a strong model only on failure** — delivering strong-model success at roughly cheap-model cost on the tasks the cheap model already handles.
+A coding agent that has the **strong model write the plan** and the **cheap model implement it** — delivering always-strong success quality at **~⅓ lower cost**, with **no tests and no routing signal required.**
 
-## The thesis, and what we measured
+## How we got here (why this shape, and not a router)
 
-A two-tier cascade (cheap model → strong model) is only worth building if two things are true: (1) there's a meaningful set of tasks the cheap model fails but the strong model solves, and (2) we can *tell which tasks those are* cheaply, at inference time.
+We spent most of this project trying to build a *router*: run a cheap model, and escalate to a strong model only when needed. Two independent walls killed that:
 
-We measured both on SWE-bench Verified (mini-SWE-agent driving each model; pass/fail from each repo's real tests — no LLM judge). Tiers: `gpt-5.4-mini` (cheap, $0.75/$4.50 per M) → `gpt-5.3-codex` (strong, $1.75/$14 per M).
+1. **You can't tell when to escalate without tests.** Five signals (verbalized confidence, critique+self-consistency, objective behavior, independent strong-model review, self-authored tests) all cap at **AUC ~0.72** for "did the cheap patch fail?" — and are ~chance for "is this failure worth escalating?" No LLM judgment reliably predicts patch correctness from issue+patch alone; only *running tests* does. (With real tests, escalation becomes trivial — see the with-tests variant below.)
 
-**(1) The cascade is real.** On a realistic task mix, per-task outcomes fall into:
+2. **Handing the strong model the cheap model's work makes it *worse*.** Three ways of doing it, all negative on the same 28 cheap-failures:
 
-| cell | meaning | share (n=60) |
-|------|---------|-------------:|
-| cell-1 | cheap already passes | 53% |
-| cell-3 | cheap fails, strong rescues | **20%** |
-| cell-4 | both fail | 27% |
+   | approach | how cheap's work reaches strong | result vs cold-restart |
+   |---|---|---|
+   | independent review | cheap patch → strong rates it | inverted (rates hopeless > rescuable) |
+   | warm handoff | cheap patch → strong debugs it | −2 solved, +52% cost |
+   | recon-then-repair | cheap recon → strong repairs on it | −4 solved |
 
-Escalating the cell-3 tasks lifts success from **53% (always-cheap) to 73%**. That ~20-point headroom is the product's reason to exist. (cell-3 concentrates in *medium*-difficulty tasks — easy tasks the cheap model already nails; the hardest tasks neither model solves. The n=30 pilot showed a rosier 27% / 50→77%; n=60 is the tighter estimate.)
+   Consistent finding: **the strong model does better from a clean start than from weak-model scaffolding** — because the intelligence is in the *framing/decisions*, and the cheap model frames badly.
 
-**(2) The escalation signal is the hard part — and self-signals are weak.** We need to know, at inference time, "did the cheap patch actually work?" Without ground truth, we tried to get the cheap model to tell us:
+That last sentence is the whole product. If the intelligence is in the framing, put the **strong** model on the framing (the plan) and the **cheap** model on the mechanical part (the implementation). That's the flip of the failed "recon-then-repair," and it's the first thing that beats always-strong.
 
-| signal | AUC (detect cheap failure) |
-|--------|---------------------------:|
-| verbalized confidence | 0.72 |
-| critique-first + self-consistency | 0.66 |
-| independent strong-model review | 0.63 |
-| objective behavioral cues | 0.61 |
-| issue-snippet reproduction | 0.56 |
-| **model-authored reproduction test** | **0.50 (chance)** |
+## What Plan-then-Execute (PE) is
 
-All weak; nothing beats bare confidence (~0.72). Two failures are especially telling:
-- **Self-verification (0.50):** a cheap model writes a test its own (possibly wrong) patch passes — the test inherits the misunderstanding that produced the bug.
-- **Independent strong review (0.63, and Goal B *inverted*):** even a stronger, uncorrelated reviewer can't do it — it rates *hopeless* near-miss patches **higher** than rescuable ones, because a plausible-looking patch fools a reviewer. "Looks correct" ≠ "passes the tests."
-
-**No LLM judgment — self or independent — reliably predicts patch correctness from issue+patch alone. Only running tests disambiguates a plausible patch from a correct one.**
-
-## The product insight: link the user's tests
-
-Every failed signal above was an attempt to *approximate* an objective test oracle without having tests. In a real coding workflow, the user **has** tests. So don't approximate — **run them**:
+Two phases, **two separate conversations** — the executor sees only a clean, distilled plan, never the planner's raw trajectory (that separation is what avoids the poisoning that sank the handoff approaches):
 
 ```
-request → cheap model produces a patch
-        → run the user's tests against it
-        ├─ pass  → return the cheap result        (≈50% of tasks, ~8¢)
-        └─ fail  → escalate to strong model
-                 → run tests again
-                   ├─ pass → return strong result  (the cell-3 rescue)
-                   └─ fail → flag "needs a human"   (cell-4, don't ship silently)
+issue → PLANNER (strong, read-only): investigate the repo, then write a precise
+        plan to /plan.md — root cause, exact files/functions, concrete changes —
+        and stop. Never edits code.
+      → EXECUTOR (cheap, fresh conversation): given the issue + the plan, do the
+        recon + edits + verification and produce the patch.
 ```
 
-The test result is an **objective, uncorrelated** signal — it doesn't share the model's blind spots the way self-verification does. This converts the "escalate-all-failures oracle" (which we could only compute because SWE-bench has hidden tests) into a **deployable policy**.
+It is **not a router** — there is no escalation decision. It is a **fixed decomposition** that always uses both models in fixed roles. That is precisely why it needs **no routing signal** (sidestepping wall #1) and **no tests** (the plan is the artifact): it works on every task, including projects with no test suite.
 
-## Measured economics (per task = one fix; n=60)
+## The measured frontier (n=60, realistic task mix)
 
-| policy | success | escalate % | $/task |
-|--------|--------:|-----------:|-------:|
-| always-cheap | 53% | 0% | $0.10 |
-| **test-linked (primary)** | **73%** | 47% | **$0.23** |
-| confidence-router T=40 (fallback, n=30) | 60% | 13% | $0.12 |
-| always-strong | ~73%+ | 100% | $0.29 |
+Three *deployable* whole-task policies, each run on the same 60 tasks (mini-SWE-agent harness; pass/fail from each repo's real tests — no LLM judge). Tiers: `gpt-5.4-mini` (cheap) / `gpt-5.3-codex` (strong).
 
-Test-linked hits the **same success as always-strong at ~20% lower cost**, and is ~3× cheaper than always-strong on the ~half of tasks the cheap model already passes. Over a ~50-fix session: ~$5 all-cheap (about half the work lands) vs ~$12 test-linked (73% lands) vs ~$15 all-strong.
+| policy | success | total $ | $/task | needs a signal? |
+|--------|--------:|--------:|-------:|:----------------|
+| always-cheap | 32/60 (53%) | $5.93 | $0.099 | none |
+| **always-PE** | **44/60 (73%)** | **$9.29** | **$0.155** | **none** |
+| always-strong | 42/60 (70%) | $14.13 | $0.235 | yes (needs to know when to stop → tests) |
 
-## Design: tests-primary, confidence-fallback
+**Always-PE Pareto-dominates always-strong:** it matches its success (44 vs 42 is a tie at n=60 — do not read it as a win) at **34% lower cost**, and needs neither tests nor a routing signal. The cost win is the robust claim: PE is cheaper than strong on *both* subsets, so it isn't a distributional fluke.
 
-- **Primary path — test-gated escalation.** When the change is covered by runnable tests, gate escalation on real test results. Near-perfect escalation decisions; also yields a clean "both models failed → escalate to human" state (cell-4).
-- **Fallback path — confidence router.** When a change isn't test-covered, fall back to the cheap model's verbalized confidence with a tunable threshold. This is a *weak* router (AUC 0.72): useful only in the frugal regime (e.g. escalate the shakiest ~13% for +10 pts success at +50% cost). It cannot reach the test-linked ceiling — the gap *is* the value of having tests.
-- **Config knobs.** cheap/strong model IDs; escalation mode (`tests` | `confidence` | `hybrid`); confidence threshold; per-task cost/step guards.
+Against always-cheap, PE is a genuine trade: **+20 points of success for +57% cost.** So the deployable menu is two tiers — **cheap** (frugal, 53%) or **PE** (high-quality, 73%, and ⅓ cheaper than always-strong). **PE replaces always-strong as the high-quality option.**
+
+## Why it works (two mechanisms)
+
+- **Intelligence on the framing.** The strong model's plan sets a correct frame; the cheap model, railed by it, implements reliably. Flipping the roles (cheap frames → strong repairs) *lost* — same two models, opposite outcome — which is the constructive confirmation of the whole project's finding.
+- **Always-strong isn't even the ceiling — it overengineers.** On the 32 easy tasks: cheap solved **32/32**, but always-strong solved only **30/32** — it *broke two tasks cheap already handled* (the "cell-2" overengineering effect, ~6%). PE (31/32) mostly avoids this because the cheap executor implements plainly. So strong-alone hurts itself on easy work; the plan-then-cheap split does not.
+
+## Deployment shape (important — it's an agent, not a chat proxy)
+
+PE requires **running tools** (the planner reads files; the executor edits and verifies), so it lives as an **agent with a sandboxed workspace** — like the harness here — not as a stateless chat proxy. Concretely:
+
+- **Standalone / single-shot** ("fix this issue in this repo"): PE runs end-to-end and returns a patch. This is the validated form (`benchmarks/cascade/plan_execute.py`).
+- **Behind a turn-based tool (Cursor/Claude Code):** these own their own agent loop and expose only a per-turn model endpoint, so PE — a two-phase, two-conversation orchestration — is **not** a drop-in proxy for them. A transparent per-turn router *would* fit that slot, but per-turn routing is exactly what we found doesn't work (wall #1). Honest position: PE is a coding agent, not a Cursor middleware.
+- **With-tests chat variant:** when the client *does* have tests, the simpler test-gated cold cascade (`proxy.py`: cheap → run tests → escalate on failure) is deployable as an OpenAI-compatible proxy. It is the with-tests special case; PE is the general, no-tests answer.
+
+## Configuration & tuning (what's settled)
+
+- **Planner budget = 8** (`--plan-soft-budget`). Swept it: budget 5 → 10/28 (drops *below* cold — it loses exactly the hard-task rescues, because deeper planning is what buys them); budget 8 → 13/28; budget 14 → no gain, just more cost. 8 is the optimum.
+- **Proportionality is not achievable by prompting.** The strong planner is constitutionally thorough — it investigates to the budget regardless of "be frugal" instructions. The budget is a blunt fixed knob, not a complexity-adaptive one.
+- Knobs: planner/executor model IDs, `--plan-soft-budget`, `--plan-cap` (safety), `--exec-cap`, per-task cost guard.
 
 ## Limitations & caveats
 
-- **Coverage.** Test-linked only fires where the change is exercised by tests. Uncovered changes fall back to the weak confidence signal. The real-world win depends on how much of a user's work is test-covered.
-- **Runnable tests in the loop.** Requires a sandbox to run the user's tests (we use per-task Docker; the harness already does this).
-- **Sample size.** Numbers are n=30 (95% CIs are wide, esp. the 27% cell-3 and 0.72 confidence AUC). An n=60 run is in progress; the cell-3 fraction and confidence AUC should be treated as ±~10–15% until then.
-- **Tier choice matters.** cell-3 exists only because the two tiers have a real capability gap (~12 pts). Too-similar tiers (e.g. gpt-5.6 sol/luna, ~2 pts apart) collapse cell-3 to ~0.
-- **Harness ≠ native scaffold.** Absolute success rates are below models' published SWE-bench numbers (generic agent harness vs their own scaffolds); the cheap-vs-strong *comparison* is fair since both use the same harness.
+- **n=60.** Success differences (44 vs 42; 31 vs 30) are within noise — lean on the cost result, which is consistent per-task.
+- **Mild tuning optimism.** budget=8 was tuned on the 28-failure subset; the 32 cell-1 tasks are a fresh holdout and came in clean, but there's no fully-independent test set.
+- **Generic harness ≠ native scaffold.** Absolute success rates are below the models' published SWE-bench numbers (generic agent vs their own scaffolds); the three-way *comparison* is fair since all use the same harness.
+- **Tier gap matters.** PE needs a real capability gap between planner and executor (~12 pts here). Too-similar tiers collapse the benefit.
+- **Executor ceiling.** Some failures are execution-bound — the cheap model can't implement even a correct plan (2 such regressions at n=28). A better plan doesn't fix a genuinely hard implementation.
 
-## Harness / reproduction
+## Reproduction
 
-All in `benchmarks/cascade/`: `sample.py` (stratified sampler), `run.py` (cheap→score→escalate→score→cells), `analyze.py` (cells + cost), `abstention.py` / `objective_signals.py` / `elicitation.py` / `verify.py` (the signal experiments), `frontier.py` (this cost/success table). Pass/fail via the `swebench` evaluator in Docker.
+All in `benchmarks/cascade/`:
+- `sample.py` — stratified sampler; `run.py` — cheap→score→strong cascade (`--cheap-only`, `--strong-only`); `analyze.py` — cells/cost.
+- `plan_execute.py` — the PE agent (`PlannerAgent` + executor) and its runner (`--sample` to cover arbitrary id lists).
+- `turn_opportunity.py` — the turn-cost analysis that motivated PE; `warm.py` / `rnr.py` / `recon_repair.py` / `abstention.py` / `objective_signals.py` / `elicitation.py` / `verify.py` / `review.py` — the negative-result probes.
+- `frontier_full.py` — regenerates the n=60 frontier table above from the run dirs.
 
-## Open questions / next
+Pass/fail via the `swebench` evaluator in Docker.
 
-- ~~Independent verifier to lift the fallback above 0.72~~ — **tried (review.py), failed** (0.63, Goal B inverted). Combined with the four other signals, this closes the "improve the no-tests fallback" lever: the fallback is firmly capped ~0.72, so the product's value lives in the test-linked primary path.
-- ~~n=60 to tighten cell-3 and confirm the fallback ceiling~~ — **done**: cell-3 settled at 20% (from the n=30 spike of 27%); fallback confidence AUC confirmed at **0.733** (n=60), Goal B still ~chance/inverted (0.33). Beyond n=60 would narrow CIs further but is unlikely to move the qualitative picture.
-- Measure real-world test-coverage rates to estimate how often the primary (test-linked) vs fallback (confidence) path fires in practice — this is the single biggest driver of the product's real-world value.
-- ~~Wire the policy into the OpenAI-compatible proxy~~ — **done**: `proxy.py` implements `test-linked | confidence | hybrid` modes. Test-linked delegates "apply + run tests" to a `--verify-cmd` hook (`$CASCADE_PATCH` = the cheap answer, run in `--workdir`; exit non-zero → escalate). Verified end-to-end: verify-pass → cheap tier, verify-fail → strong tier, confidence mode → confidence-gated. Not yet handled: streaming from the live strong call (currently buffers then fake-streams) and per-turn tool-call passthrough (cascade decides on a full candidate answer).
+## Bottom line
+
+The deployable no-tests coding cascade is **Plan-then-Execute**: strong plans, cheap executes, fixed decomposition, no router. It matches always-strong quality at ~⅓ lower cost and needs no tests — the constructive answer the routing and handoff dead-ends pointed to.
