@@ -44,6 +44,7 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
+from jinja2 import Template  # noqa: E402
 from minisweagent.agents.default import DefaultAgent  # noqa: E402
 from minisweagent.config import builtin_config_dir, get_config_from_spec  # noqa: E402
 from minisweagent.models import get_model  # noqa: E402
@@ -122,6 +123,80 @@ class PlannerAgent(DefaultAgent):
         return result
 
 
+EXEC_HANDOFF = """PLANNING COMPLETE. You may now MODIFY files in /testbed. Implement the plan below, verify it, and submit using the required workflow.
+
+<plan>
+{plan}
+</plan>
+
+{base}"""
+
+
+class PlanExecuteInlineAgent(DefaultAgent):
+    """Single-conversation PE (the Cursor-proxy analog): STRONG plans read-only
+    (writes /plan.md), then the SAME conversation switches to CHEAP for execution
+    — cheap inherits the full planner trajectory rather than a fresh conversation.
+    Tests whether the two-phase PE's fresh-conversation reset is load-bearing."""
+
+    def __init__(self, model, env, *, cheap_model, task, soft_budget: int = 8, **kwargs):
+        super().__init__(model, env, **kwargs)  # model = STRONG (plans first)
+        self._cheap = cheap_model
+        self._task = task
+        self.soft_budget = soft_budget
+        self.switched = False
+        self.switch_at_call: int | None = None
+        self.plan: str | None = None
+
+    def step(self) -> list[dict]:
+        if not self.switched and self.plan is None and self.n_calls >= self.soft_budget:
+            self.add_messages({"role": "user", "content": PLAN_NUDGE})
+        result = self.execute_actions(self.query())
+        if not self.switched and self.plan is None:
+            out = self.env.execute({"command": f"cat {PLAN_FILE} 2>/dev/null || true"}).get("output", "")
+            if out.strip():
+                self.plan = out.strip()
+                # hand off IN PLACE: swap to cheap, inject full execution+submit workflow
+                self.model = self._cheap
+                self.switched = True
+                self.switch_at_call = self.n_calls
+                base = Template(_BASE_INSTANCE).render(task=self._task)
+                self.add_messages({"role": "user",
+                                   "content": EXEC_HANDOFF.format(plan=self.plan[:4000], base=base)})
+        return result
+
+
+def run_pe_inline_agent(instance: dict, planner_model: str, executor_model: str, effort: str, out_dir: Path,
+                        plan_cap: int, exec_cap: int, wall_time: int, cost_limit: float, soft_budget: int = 8) -> dict:
+    iid = instance["instance_id"]
+    rec = {"instance_id": iid, "tier": "pei", "planner": planner_model, "executor": executor_model}
+    t0 = time.time()
+    try:
+        pcfg = build_openai_config(planner_model, effort, step_limit=plan_cap + exec_cap,
+                                   wall_time_limit_seconds=wall_time, cost_limit=cost_limit)
+        pcfg["agent"]["instance_template"] = PLANNER_INSTANCE  # starts in planner mode
+        ecfg = build_openai_config(executor_model, effort, cost_limit=cost_limit)
+        env = get_sb_environment(pcfg, instance)
+        agent = PlanExecuteInlineAgent(
+            get_model(config=pcfg["model"]), env, cheap_model=get_model(config=ecfg["model"]),
+            task=instance["problem_statement"], soft_budget=soft_budget,
+            output_path=out_dir / "traj" / f"{iid}.pei.traj.json", **pcfg["agent"])
+        info = agent.run(instance["problem_statement"])
+        rec["exit_status"] = info.get("exit_status")
+        rec["patch"] = info.get("submission", "") or ""
+        rec["n_calls"] = agent.n_calls
+        rec["cost_usd"] = round(agent.cost, 4)
+        rec["switched"] = agent.switched
+        rec["switch_at_call"] = agent.switch_at_call
+        rec["plan_chars"] = len(agent.plan or "")
+    except Exception as e:
+        rec["exit_status"] = type(e).__name__
+        rec["patch"] = ""
+        rec["error"] = str(e)[:500]
+        rec["cost_usd"] = 0.0
+    rec["wall_s"] = round(time.time() - t0, 1)
+    return rec
+
+
 def run_pe_agent(instance: dict, planner_model: str, executor_model: str, effort: str, out_dir: Path,
                  plan_cap: int, exec_cap: int, wall_time: int, cost_limit: float, soft_budget: int = 8) -> dict:
     iid = instance["instance_id"]
@@ -170,7 +245,8 @@ def run_pe_agent(instance: dict, planner_model: str, executor_model: str, effort
     return rec
 
 
-def run_pe_phase(instances, planner, executor, effort, out_dir, workers, plan_cap, exec_cap, wall_time, cost_limit, soft_budget=8):
+def run_pe_phase(instances, planner, executor, effort, out_dir, workers, plan_cap, exec_cap, wall_time, cost_limit, soft_budget=8, inline=False):
+    agent_fn = run_pe_inline_agent if inline else run_pe_agent
     preds_path, results_path = out_dir / "preds.pe.json", out_dir / "results.pe.json"
     preds = json.loads(preds_path.read_text()) if preds_path.exists() else {}
     results = json.loads(results_path.read_text()) if results_path.exists() else {}
@@ -183,7 +259,7 @@ def run_pe_phase(instances, planner, executor, effort, out_dir, workers, plan_ca
     print(f"\n[pe: plan={planner} -> exec={executor}] {len(todo)} to run ({len(results)} done), workers={workers}")
 
     def _one(inst):
-        rec = run_pe_agent(inst, planner, executor, effort, out_dir, plan_cap, exec_cap, wall_time, cost_limit, soft_budget)
+        rec = agent_fn(inst, planner, executor, effort, out_dir, plan_cap, exec_cap, wall_time, cost_limit, soft_budget)
         with _LOCK:
             iid = rec["instance_id"]
             results[iid] = rec
@@ -215,6 +291,8 @@ def main() -> None:
     ap.add_argument("-w", "--workers", type=int, default=2)
     ap.add_argument("--plan-cap", type=int, default=20, help="planner safety step cap (it self-terminates earlier)")
     ap.add_argument("--plan-soft-budget", type=int, default=8, help="planner is nudged to write the plan past this many calls")
+    ap.add_argument("--inline", action="store_true",
+                    help="single-conversation PE (strong plans then cheap continues IN PLACE) — the Cursor-proxy analog")
     ap.add_argument("--exec-cap", type=int, default=100)
     ap.add_argument("--wall-time", type=int, default=1800)
     ap.add_argument("--cost-limit", type=float, default=5.0)
@@ -242,7 +320,7 @@ def main() -> None:
 
     results = run_pe_phase(instances, args.planner_model, args.executor_model, args.effort, out_dir,
                            args.workers, args.plan_cap, args.exec_cap, args.wall_time, args.cost_limit,
-                           args.plan_soft_budget)
+                           args.plan_soft_budget, args.inline)
     resolved = evaluate(out_dir / "preds.pe.json", ids, f"pe_{out_dir.name}_{int(time.time())}", out_dir, args.workers)
 
     out = []

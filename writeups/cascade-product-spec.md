@@ -57,13 +57,27 @@ Against always-cheap, PE is a genuine trade: **+20 points of success for +57% co
 - **Intelligence on the framing.** The strong model's plan sets a correct frame; the cheap model, railed by it, implements reliably. Flipping the roles (cheap frames → strong repairs) *lost* — same two models, opposite outcome — which is the constructive confirmation of the whole project's finding.
 - **Always-strong isn't even the ceiling — it overengineers.** On the 32 easy tasks: cheap solved **32/32**, but always-strong solved only **30/32** — it *broke two tasks cheap already handled* (the "cell-2" overengineering effect, ~6%). PE (31/32) mostly avoids this because the cheap executor implements plainly. So strong-alone hurts itself on easy work; the plan-then-cheap split does not.
 
-## Deployment shape (important — it's an agent, not a chat proxy)
+## Deployment shape: a platform-agnostic model gateway
 
-PE requires **running tools** (the planner reads files; the executor edits and verifies), so it lives as an **agent with a sandboxed workspace** — like the harness here — not as a stateless chat proxy. Concretely:
+PE has two equivalent forms, and the second is what ships:
 
-- **Standalone / single-shot** ("fix this issue in this repo"): PE runs end-to-end and returns a patch. This is the validated form (`benchmarks/cascade/plan_execute.py`).
-- **Behind a turn-based tool (Cursor/Claude Code):** these own their own agent loop and expose only a per-turn model endpoint, so PE — a two-phase, two-conversation orchestration — is **not** a drop-in proxy for them. A transparent per-turn router *would* fit that slot, but per-turn routing is exactly what we found doesn't work (wall #1). Honest position: PE is a coding agent, not a Cursor middleware.
-- **With-tests chat variant:** when the client *does* have tests, the simpler test-gated cold cascade (`proxy.py`: cheap → run tests → escalate on failure) is deployable as an OpenAI-compatible proxy. It is the with-tests special case; PE is the general, no-tests answer.
+**PE-inline — one conversation, not two.** We tested whether the two-phase split (a separate fresh executor conversation) is required. It is not: a **single-conversation** variant — strong plans, then the *same* conversation switches to cheap for execution — **matched** the two-phase agent (13/28) and was **cheaper** ($4.05 vs $5.34, because cheap continues with strong's recon in context instead of re-exploring). This matters because a *gateway* is exactly in that situation: one shared conversation, no ability to spawn a separate planner.
+
+**The gateway (`proxy_phase.py`).** Because PE-inline works, PE deploys as a **model gateway** that any agentic coding platform points at — it decides, per turn, which tier answers *this* turn, inferred statelessly from the conversation:
+
+- still exploring (no edit yet) and within the planning budget → **strong**
+- an edit has happened, or the budget is exhausted → **cheap**
+
+The client (Cursor / OpenAI Codex CLI / Claude Code / aider / cline / …) owns the agent loop and executes tools; the gateway only picks the model and forwards, with a light planning/execution nudge. Two protocol surfaces cover essentially every platform:
+
+- **`POST /v1/chat/completions`** (OpenAI-compatible) — Cursor, Codex CLI, aider, cline, continue, …
+- **`POST /v1/messages`** (Anthropic Messages) — Claude Code (`ANTHROPIC_BASE_URL`).
+
+Both normalize to one internal representation and call the models via the Responses API through litellm (codex is Responses-only), so tier selection + reasoning effort work uniformly. Tool calls pass straight through.
+
+*Validation status:* the routing core is unit-tested; both protocol surfaces are verified end-to-end with real multi-turn tool-call traffic (correct strong→cheap switch, tool passthrough, valid responses). Not yet validated inside a live Cursor/Claude Code session or a full SWE-bench run *through* the gateway — that's the remaining end-to-end check. Open engineering items: task-boundary detection in a continuous chat (to reset the phase), and the phase-boundary heuristic (turn-count vs first-edit) may want per-platform tuning.
+
+**With-tests chat variant.** When the client *has* tests, the simpler test-gated cold cascade (`proxy.py`: cheap → run tests → escalate on failure) is the with-tests special case. PE is the general, no-tests answer.
 
 ## Configuration & tuning (what's settled)
 
@@ -83,7 +97,8 @@ PE requires **running tools** (the planner reads files; the executor edits and v
 
 All in `benchmarks/cascade/`:
 - `sample.py` — stratified sampler; `run.py` — cheap→score→strong cascade (`--cheap-only`, `--strong-only`); `analyze.py` — cells/cost.
-- `plan_execute.py` — the PE agent (`PlannerAgent` + executor) and its runner (`--sample` to cover arbitrary id lists).
+- `plan_execute.py` — the PE agent (`PlannerAgent` + executor) and its runner; `--sample`, `--plan-soft-budget`, and `--inline` (the single-conversation PE-inline variant).
+- `../../proxy_phase.py` (repo root) — the deployable phase-routing gateway (OpenAI `/v1/chat/completions` + Anthropic `/v1/messages`).
 - `turn_opportunity.py` — the turn-cost analysis that motivated PE; `warm.py` / `rnr.py` / `recon_repair.py` / `abstention.py` / `objective_signals.py` / `elicitation.py` / `verify.py` / `review.py` — the negative-result probes.
 - `frontier_full.py` — regenerates the n=60 frontier table above from the run dirs.
 
