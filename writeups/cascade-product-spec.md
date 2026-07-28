@@ -10,7 +10,7 @@ A coding agent that has the **strong model write the plan** and the **cheap mode
 
 We spent most of this project trying to build a *router*: run a cheap model, and escalate to a strong model only when needed. Two independent walls killed that:
 
-1. **You can't tell when to escalate without tests.** Five signals (verbalized confidence, critique+self-consistency, objective behavior, independent strong-model review, self-authored tests) all cap at **AUC ~0.72** for "did the cheap patch fail?" — and are ~chance for "is this failure worth escalating?" No LLM judgment reliably predicts patch correctness from issue+patch alone; only *running tests* does. (With real tests, escalation becomes trivial — see the with-tests variant below.)
+1. **You can't tell when to escalate without tests.** Five signals (verbalized confidence, critique+self-consistency, objective behavior, independent strong-model review, self-authored tests) all cap at **AUC ~0.72** for "did the cheap patch fail?" — and are ~chance for "is this failure worth escalating?" No LLM judgment reliably predicts patch correctness from issue+patch alone; only *running tests* does. (With real tests you *can* verify — but, as the "With tests" section shows, verification is best used as a safety net on PE, not as a cheap-first routing gate.)
 
 2. **Handing the strong model the cheap model's work makes it *worse*.** Three ways of doing it, all negative on the same 28 cheap-failures:
 
@@ -46,9 +46,10 @@ Three *deployable* whole-task policies, each run on the same 60 tasks (mini-SWE-
 |--------|--------:|--------:|-------:|:----------------|
 | always-cheap | 32/60 (53%) | $5.93 | $0.099 | none |
 | **always-PE** | **44/60 (73%)** | **$9.29** | **$0.155** | **none** |
-| always-strong | 42/60 (70%) | $14.13 | $0.235 | yes (needs to know when to stop → tests) |
+| test-gated cheap→strong | 44/60 (73%) | $13.99 | $0.233 | yes (real tests) |
+| always-strong | 42/60 (70%) | $14.13 | $0.235 | yes (real tests) |
 
-**Always-PE Pareto-dominates always-strong:** it matches its success (44 vs 42 is a tie at n=60 — do not read it as a win) at **34% lower cost**, and needs neither tests nor a routing signal. The cost win is the robust claim: PE is cheaper than strong on *both* subsets, so it isn't a distributional fluke.
+**Always-PE Pareto-dominates every other policy here:** it matches the best success (44) at the lowest cost of any high-quality option. Note especially the **test-gated cheap→strong cascade ($0.233) is barely cheaper than always-strong ($0.235)** — because at a 47% cheap-failure rate it pays for the cheap attempt on everything and then pays strong on the ~half that fail (the cheap attempt is wasted there). Cheap-first-then-escalate only saves money when cheap *already* succeeds most of the time; see "With tests" below. PE has no such double-pay, so it's ⅓ cheaper than both.
 
 Against always-cheap, PE is a genuine trade: **+20 points of success for +57% cost.** So the deployable menu is two tiers — **cheap** (frugal, 53%) or **PE** (high-quality, 73%, and ⅓ cheaper than always-strong). **PE replaces always-strong as the high-quality option.**
 
@@ -77,7 +78,33 @@ Both normalize to one internal representation and call the models via the Respon
 
 *Validation status:* the routing core is unit-tested; both protocol surfaces are verified end-to-end with real multi-turn tool-call traffic (correct strong→cheap switch, tool passthrough, valid responses). Not yet validated inside a live Cursor/Claude Code session or a full SWE-bench run *through* the gateway — that's the remaining end-to-end check. Open engineering items: task-boundary detection in a continuous chat (to reset the phase), and the phase-boundary heuristic (turn-count vs first-edit) may want per-platform tuning.
 
-**With-tests chat variant.** When the client *has* tests, the simpler test-gated cold cascade (`proxy.py`: cheap → run tests → escalate on failure) is the with-tests special case. PE is the general, no-tests answer.
+See "With tests" below for the with-tests story.
+
+## With tests: verification is a safety net on PE, not a cheap-first gate
+
+A natural assumption is that *having* tests means you should run the **cheap model first, test it, and escalate on failure**. On a realistic workload that barely helps: at our 47% cheap-failure rate the test-gated cheap→strong cascade costs $0.233/task vs always-strong's $0.235 — because you pay for the cheap attempt on *everything* and then pay strong on the half that fail. **Cheap-first-then-escalate only pays off when the cheap model already solves most tasks.** The breakeven vs PE:
+
+```
+cheap-first ≈ C_cheap + p_fail · C_strong    ($0.099 + p·$0.29)
+PE          ≈ flat                           ($0.155)
+→ breakeven at p_fail ≈ 19%
+```
+
+So **if your cheap model solves >~81% of your tasks, cheap-first-escalate is cheaper than PE; below that, PE wins.** Our workload (47% cheap-failure) is well past that line.
+
+What tests actually buy you is not cheaper routing — it's a **guarantee** (a verified pass/fail, and a clean "both failed → human" state). The right way to use them is therefore:
+
+> **PE as the base, tests as a safety net.** Run PE (efficient at any failure rate), then run the tests. Pass → return a *verified* answer. Fail → escalate (cold restart to strong) or flag for a human.
+
+This gives PE's flat, low cost *and* the verification, and beats cheap-first-then-strong at every failure rate above ~19%.
+
+**Product map:**
+- **No tests** → PE (`proxy_phase.py`). The only thing that works without a signal.
+- **Tests + normal/hard workload** → **PE + verify** (PE base, tests gate its output). The real with-tests product.
+- **Tests + very-easy workload (cheap solves 80%+)** → cheap-first-escalate (`proxy.py`), the one niche where PE's per-task planning overhead isn't worth it.
+- **always-strong** → dominated everywhere.
+
+So PE is the base in both worlds; tests are an optional verification layer, not a separate cascade. (`proxy.py` — the standalone cheap-first test-gated cascade — remains only for that easy-workload niche; PE + verify is not yet built, a small addition: wrap `proxy_phase.py`'s output in a test check.)
 
 ## Configuration & tuning (what's settled)
 
@@ -106,4 +133,4 @@ Pass/fail via the `swebench` evaluator in Docker.
 
 ## Bottom line
 
-The deployable no-tests coding cascade is **Plan-then-Execute**: strong plans, cheap executes, fixed decomposition, no router. It matches always-strong quality at ~⅓ lower cost and needs no tests — the constructive answer the routing and handoff dead-ends pointed to.
+**Plan-then-Execute is the base product in every case**: strong plans, cheap executes, fixed decomposition, no router. It matches always-strong quality at ~⅓ lower cost and needs no tests — the constructive answer the routing and handoff dead-ends pointed to. Tests, when available, are a *verification safety net* layered on PE (pass → certified answer; fail → escalate/flag), not a separate cheap-first cascade — that only pays off on easy workloads where the cheap model already wins ≥81% of the time.
