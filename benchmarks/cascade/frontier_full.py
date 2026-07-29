@@ -90,6 +90,32 @@ def main() -> None:
     print(f"\nalways-PE vs always-strong: {'+' if pe_solved>=strong_solved else ''}{pe_solved-strong_solved} solved, "
           f"{100*(pe_cost-strong_cost_total)/strong_cost_total:+.0f}% cost  (Pareto-dominant)")
 
+    # ── PE + verification (the with-tests product): PE first, tests gate its output ──
+    # per-task PE pass/cost and strong-cold pass/cost across all 60
+    pe_pass = {r["iid"]: r["pe_pass"] for r in (pe_fail + pe_c1)}
+    pe_cost_by = {r["iid"]: (r["pe_cost"] or 0) for r in (pe_fail + pe_c1)}
+    strong_pass, strong_cost_by = {}, {}
+    for r in BASE_RUNS:  # 28 cheap-fails: cold strong
+        r = r.resolve()
+        rs = _resolved(r, "*strong_*.json")
+        for i, v in json.loads((r / "results.strong.json").read_text()).items():
+            strong_cost_by[i] = v["cost_usd"]; strong_pass[i] = i in rs
+    for i, v in json.loads((RUNS_DIR / "strong_cell1" / "results.strong.json").read_text()).items():
+        strong_cost_by[i] = v["cost_usd"]
+    for i in cell1:
+        strong_pass[i] = i in set(so["resolved_strong"])
+
+    cert_only = sum(pe_pass.values())
+    cost_only = sum(pe_cost_by.values())
+    esc_solved = sum(pe_pass[i] or strong_pass.get(i, False) for i in pe_pass)
+    esc_cost = cost_only + sum(strong_cost_by.get(i, 0) for i in pe_pass if not pe_pass[i])
+    rescued = esc_solved - cert_only
+    print("\nWITH TESTS — PE + verification (tests gate PE's output):")
+    print(f"  verify only (certify/flag) : {cert_only}/{n} CERTIFIED  ${cost_only:.2f}  "
+          f"(+{n-cert_only} flagged for a human)  <- certainty at PE's cost")
+    print(f"  verify + escalate          : {esc_solved}/{n} certified  ${esc_cost:.2f}  "
+          f"(escalation rescued only {rescued} of {n-cert_only} — low yield, ~always-strong cost)")
+
 
 if __name__ == "__main__":
     main()
