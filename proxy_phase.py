@@ -328,12 +328,54 @@ def _anthropic_tools(tools: list | None) -> list | None:
              "parameters": t.get("input_schema", {})}} for t in tools]
 
 
+def _sse_anthropic(result: dict, model: str):
+    """Emit the Anthropic Messages streaming event sequence (message_start ->
+    content blocks -> message_delta -> message_stop). Buffer-then-emit; Claude
+    Code's stream parser needs this exact shape, not plain JSON."""
+    mid = f"msg_{uuid.uuid4().hex}"
+
+    def ev(etype, data):
+        return f"event: {etype}\ndata: {json.dumps(data)}\n\n"
+
+    def gen():
+        yield ev("message_start", {"type": "message_start", "message": {
+            "id": mid, "type": "message", "role": "assistant", "model": model, "content": [],
+            "stop_reason": None, "stop_sequence": None,
+            "usage": {"input_tokens": result["in_tok"], "output_tokens": 0}}})
+        idx = 0
+        if result["text"]:
+            yield ev("content_block_start", {"type": "content_block_start", "index": idx,
+                                             "content_block": {"type": "text", "text": ""}})
+            yield ev("content_block_delta", {"type": "content_block_delta", "index": idx,
+                                             "delta": {"type": "text_delta", "text": result["text"]}})
+            yield ev("content_block_stop", {"type": "content_block_stop", "index": idx})
+            idx += 1
+        for tc in result["tool_calls"]:
+            fn = tc["function"]
+            yield ev("content_block_start", {"type": "content_block_start", "index": idx,
+                     "content_block": {"type": "tool_use", "id": tc["id"], "name": fn["name"], "input": {}}})
+            yield ev("content_block_delta", {"type": "content_block_delta", "index": idx,
+                     "delta": {"type": "input_json_delta", "partial_json": fn["arguments"] or "{}"}})
+            yield ev("content_block_stop", {"type": "content_block_stop", "index": idx})
+            idx += 1
+        stop = "tool_use" if result["tool_calls"] else "end_turn"
+        yield ev("message_delta", {"type": "message_delta",
+                 "delta": {"stop_reason": stop, "stop_sequence": None},
+                 "usage": {"output_tokens": result["out_tok"]}})
+        yield ev("message_stop", {"type": "message_stop"})
+    return gen()
+
+
 @app.post("/v1/messages")
 async def anthropic_messages(request: Request):
     body = await request.json()
+    stream = body.get("stream", False)
     try:
         messages = _anthropic_to_chat(body)
         result, meta = route(messages, _anthropic_tools(body.get("tools")))
+        if stream:
+            return StreamingResponse(_sse_anthropic(result, meta["model"]),
+                                     media_type="text/event-stream", headers=_headers(meta))
         content_blocks: list[dict] = []
         if result["text"]:
             content_blocks.append({"type": "text", "text": result["text"]})
@@ -353,6 +395,57 @@ async def anthropic_messages(request: Request):
         return JSONResponse(payload, headers=_headers(meta))
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": {"type": type(e).__name__, "message": str(e)}})
+
+
+@app.post("/v1/messages/count_tokens")
+async def count_tokens(request: Request):
+    """Claude Code calls this for context management. A char/4 estimate is enough."""
+    body = await request.json()
+    text = " ".join(_text_of(m.get("content")) for m in _anthropic_to_chat(body))
+    return JSONResponse({"input_tokens": max(1, len(text) // 4)})
+
+
+# ── OpenAI Responses API: newest OpenAI Codex CLI (and our own harness) ─────────
+
+def _responses_input_to_chat(inp) -> list[dict]:
+    """Responses `input` (string, or list of messages + function_call /
+    function_call_output items) -> internal chat messages for routing."""
+    if isinstance(inp, str):
+        return [{"role": "user", "content": inp}]
+    msgs = []
+    for item in inp or []:
+        t = item.get("type")
+        if t == "function_call":
+            msgs.append({"role": "assistant", "tool_calls": [{"id": item.get("call_id"), "type": "function",
+                         "function": {"name": item.get("name"), "arguments": item.get("arguments") or "{}"}}]})
+        elif t == "function_call_output":
+            msgs.append({"role": "tool", "tool_call_id": item.get("call_id"), "content": _text_of(item.get("output"))})
+        elif "role" in item:
+            msgs.append({"role": item["role"], "content": _text_of(item.get("content"))})
+    return msgs
+
+
+@app.post("/v1/responses")
+async def responses_endpoint(request: Request):
+    body = await request.json()
+    try:
+        messages = _responses_input_to_chat(body.get("input", []))
+        result, meta = route(messages, body.get("tools"))
+        output = []
+        if result["text"]:
+            output.append({"type": "message", "role": "assistant", "status": "completed",
+                           "content": [{"type": "output_text", "text": result["text"]}]})
+        for tc in result["tool_calls"]:
+            output.append({"type": "function_call", "call_id": tc["id"], "name": tc["function"]["name"],
+                           "arguments": tc["function"]["arguments"]})
+        payload = {"id": f"resp_{uuid.uuid4().hex}", "object": "response", "created_at": int(time.time()),
+                   "model": meta["model"], "status": "completed", "output": output,
+                   "output_text": result["text"],
+                   "usage": {"input_tokens": result["in_tok"], "output_tokens": result["out_tok"],
+                             "total_tokens": result["in_tok"] + result["out_tok"]}}
+        return JSONResponse(payload, headers=_headers(meta))
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": {"message": str(e), "type": type(e).__name__}})
 
 
 @app.get("/health")
