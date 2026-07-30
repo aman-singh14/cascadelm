@@ -1,159 +1,65 @@
 # CascadeLM
 
-CascadeLM is a novel method of token cost optimization based on IDK classifier cascades, originally implemented with convolutional neural networks to optimize latency. The core idea is built around the following points:
+**A model gateway that makes agentic coding cheaper without giving up quality — no routing signal, no tests required.** Point any coding tool (Cursor, OpenAI Codex CLI, Claude Code, aider, cline, …) at it; it runs a **strong model for the planning/understanding turns and a cheap model for the execution turns**, automatically.
 
-1. Smaller, less "intelligent" models are less expensive per token
-2. Said smaller models can still complete many tasks that heavier models are used for
-3. Though people know smaller models are cheaper, they often use heavier models for tasks because they want quality output and confidence in the generated response
-4. Thus, the issue is people are spending way more money on responses they could've got cheaper
+> Status: **experimental / research preview.** The core method is validated on SWE-bench (below); the gateway's protocol surfaces are tested end-to-end, but it has not yet been run inside a full third-party client session. Treat it as a beta.
 
-CascadeLM removes the process of the user having to decide what model to use to save cost while making sure they're getting quality results.
+## The result
+
+On SWE-bench Verified (n=60, `gpt-5.4-mini` + `gpt-5.3-codex`; pass/fail from each repo's real tests — no LLM judge):
+
+| policy | success | $/task |
+|--------|--------:|-------:|
+| always-cheap | 53% | $0.099 |
+| **CascadeLM (Plan-then-Execute)** | **73%** | **$0.155** |
+| always-strong | 70% | $0.235 |
+
+CascadeLM **matches always-strong's quality at ~⅓ lower cost**, and needs no tests and no "should I escalate?" signal. (n=60 — success differences are within noise; the cost result is the robust one.)
 
 ## How it works
 
-1. CascadeLM does a probe pass with a small model
-2. The model calculates the mean entropy of the initial response and if the mean entropy is above a certain threshold (more on this later), then the cascade escalates
-3. If the model escalates, the response is regenerated with a larger model. If the model doesn't escalate, the response the user sees is simply the initial response from the small model
+It's **not a router** ("run cheap, escalate if it looks wrong") — we found no reliable escalation signal exists without tests. It's a **fixed decomposition**: the strong model plans, the cheap model executes. The gateway infers the phase from the conversation each turn — still exploring → **strong**; an edit has happened (or the planning budget is spent) → **cheap** — and forwards to the right model. Tool calls pass straight through.
 
-This process can be repeated with many models (for now I'm only testing 2) but the cascade relies on the premise that even a few queries can be done with a small model. This is because if the model escalates, the total cost would include both the small model and the heavier models; however, in the case that the model does not escalate, the cost to the user is only of the small model which most times is marginal compared to the cost of a larger model (e.g. gpt-4o-mini vs gpt-4o). In the end, it will be cheaper than just using the bigger model for everything.
+Every response carries `X-Cascade-Phase`, `X-Cascade-Model`, and `X-Cascade-Cost-USD` headers so you can see the routing.
 
-## What I found from benchmarking
-
-I built out a proper benchmark to test whether the entropy signal actually holds up, and the honest answer is that **it depends heavily on the domain**.
-
-On short-form Q&A it looks great. "What is the capital of Japan?" comes back at 0.0004 entropy and "Who is the most underrated philosopher?" comes back at 0.4949, which is exactly the separation you'd want.
-
-But when I tested it on realistic coding-agent queries (170 of them, generated against a real FastAPI codebase with actual file contents in context), the signal fell apart:
-
-| Measure | Value | What it means |
-|---|---|---|
-| Spearman ρ (entropy vs difficulty) | +0.085 | basically no relationship |
-| AUC — should escalate vs shouldn't | 0.592 | barely above chance (0.5) |
-| AUC — hardest vs mid queries | 0.408 | **below** chance, so it's inverted |
-| Best binary accuracy | 71% | vs a 68% always-escalate baseline |
-
-The reason is that mean token entropy measures how *fluently the model generates text*, not how *hard the task is*. Those two things line up on short factual questions but come apart badly on coding work. If you ask a model to design a caching layer it will confidently write out a plausible-sounding plan (low entropy, hard task). If you ask it to fix an off-by-one in one specific function it will hesitate over exactly which line and operator to change (high entropy, easy task). That's the inversion showing up in the numbers above.
-
-I wrote this up properly in [writeups/entropy-routing-negative-result.md](writeups/entropy-routing-negative-result.md) with the full methodology and threats to validity.
-
-So to be clear about where this stands: the entropy approach works for the short-form case shown in the examples below, and does not work for long-context coding queries. I'm currently working on replacing the routing signal with something better rather than trying to tune the thresholds, since you can't threshold your way out of a signal that isn't ordered.
-
-## Limitations
-
-I flagged these when I started, and the benchmark confirmed most of them:
-
-1. Small models can confidently hallucinate and generate wrong answers when they should've escalated. **(Confirmed — this is the single biggest failure mode.)**
-2. Sometimes the smaller model isn't confident about how to format the response rather than the content of the response itself, causing unnecessary escalation. **(Confirmed, and it turns out to be a specific case of the general problem that entropy tracks fluency instead of difficulty.)**
-3. Sometimes the model basically dodges the question and admits it doesn't know but doesn't escalate. This is because the model is confident that it doesn't know, so the mean entropy of the response isn't high.
-4. Subjective questions (e.g. Who is the most underrated philosopher?) escalate but don't necessarily yield any improvements in quality. This is because there are many answers that could work which raises the entropy; however, the same issue applies to heavier models. **(Confirmed.)**
-
-## Installation
-
-To install, simply clone my repo from GitHub and run the commands below:
+## Install & run
 
 ```bash
-git clone https://github.com/aman-singh14/cascadelm
-cd cascadelm
+git clone https://github.com/aman-singh14/cascadelm && cd cascadelm
 pip install -e .
+export OPENAI_API_KEY=sk-...        # the gateway calls the OpenAI models
+python proxy_phase.py               # serves on http://127.0.0.1:8000
 ```
 
-## Basic usage
+Config: `--strong <model>` `--cheap <model>` `--plan-turns N` (switch strong→cheap after N turns, default 8) `--no-framing` `--port N`.
 
-```python
-from cascadelm import CascadeClient
+## Point your coding tool at it
 
-client = CascadeClient(entropy_threshold=0.4)
-response = client.chat(messages=[...])
+**OpenAI-compatible (Cursor, Codex CLI, aider, cline, continue, …):** set the base URL to `http://127.0.0.1:8000/v1`. The API key can be anything (the gateway uses its own `OPENAI_API_KEY`); the requested model name is ignored — routing is by phase.
 
-print(response.content)
-print(response.confidence)
-client.print_session_summary()
+```bash
+# aider
+OPENAI_API_BASE=http://127.0.0.1:8000/v1 OPENAI_API_KEY=x aider --model openai/gpt-4o-mini
 ```
 
-## Message format
+**Claude Code:**
 
-The `messages` parameter is formatted the same as the OpenAI SDK:
-
-```python
-# Text only
-response = client.chat(messages=[
-    {"role": "user", "content": "What is the capital of France?"}
-])
-
-# With system prompt
-response = client.chat(messages=[
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "What is the capital of France?"}
-])
-
-# Multi-turn conversation
-response = client.chat(messages=[
-    {"role": "user", "content": "What is the capital of France?"},
-    {"role": "assistant", "content": "The capital of France is Paris."},
-    {"role": "user", "content": "What about Germany?"}
-])
-
-# Multimodal — image + text
-response = client.chat(messages=[
-    {
-        "role": "user",
-        "content": [
-            {"type": "image_url", "image_url": {"url": "https://..."}},
-            {"type": "text", "text": "What's in this image?"}
-        ]
-    }
-])
+```bash
+ANTHROPIC_BASE_URL=http://127.0.0.1:8000 ANTHROPIC_API_KEY=x claude
 ```
 
-## Choosing an entropy threshold
+Surfaces implemented: `POST /v1/chat/completions` (+ SSE streaming), `POST /v1/messages` (+ streaming, `count_tokens`), `POST /v1/responses`, `GET /health`.
 
-Note that the user has the freedom to configure the entropy threshold when initializing `CascadeClient`. There are tradeoffs of having a high and low threshold:
+## With tests: PE + verification
 
-- **High threshold** — best for minimum cost but may lack in quality for harder queries
-- **Low threshold** — escalates more often if the user wants peace of mind and more confidence in their responses (but more expensive)
+If your project has tests, layer verification on top (`benchmarks/cascade/pe_verify.py`): run Plan-then-Execute, then gate its patch on your tests — **pass → a certified answer; fail → flag for a human** (or `--escalate` to retry with the strong model). This gives you certainty at PE's cost. Note: cheap-first-then-escalate (the "obvious" test cascade) barely beats always-strong unless your cheap model already solves >~80% of tasks — see [the spec](writeups/cascade-product-spec.md) for the economics.
 
-Based on the benchmarking above, I'd only recommend tuning this for short-form Q&A. For coding queries the threshold doesn't meaningfully separate easy from hard queries no matter where you put it.
+## Honest status
 
-## The confidence object
+- ✅ **Validated:** the core method (n=60 SWE-bench); routing/orchestration logic (unit-tested); all three protocol surfaces + streaming (real-client SSE parsers); a real agentic loop driven through the gateway to a correct fix.
+- ⚠️ **Not yet:** a full session inside a real Cursor/Claude Code/Codex client; larger-n / other model-pairs / other languages; streaming *token-by-token* (currently buffers then emits); production hardening (auth, retries, provider-outage handling).
+- Known knobs: `--plan-turns` trades planning depth for cost (8 is tuned); the phase-boundary heuristic may want per-platform tuning.
 
-The confidence object consists of the model used, the mean entropy, and low-confidence spans (groups of tokens that were flagged for being uncertain — may be useful to review these areas). Below are examples of the output:
+## Background: how this method was found
 
-```
-Q: What is the capital of Japan?
-Model: gpt-4o-mini | Entropy: 0.0004
-Spans: []
-```
-
-```
-Q: Who is the most underrated philosopher?
-Model: gpt-4o | Entropy: 0.4949
-Spans: [
-  {'text': 'Identifying the', 'start_token': 0, 'end_token': 2, 'mean_span_entropy': 0.3926},
-  {'text': 'philosopher" can be subjective and depend on personal perspectives and cultural contexts. However', 'start_token': 6, 'end_token': 20, 'mean_span_entropy': 0.5844},
-  {'text': 'one philosopher often mentioned in discussions of underrated thinkers is Simone de Beauvoir', 'start_token': 22, 'end_token': 35, 'mean_span_entropy': 0.5084},
-  {'text': 'While she is recognized for her contributions to existentialism and feminist theory, her works, particularly "The', 'start_token': 37, 'end_token': 56, 'mean_span_entropy': 0.4233},
-  {'text': 'sometimes do not receive as much attention as those of her male contemporaries, like Jean-Paul Sart', 'start_token': 60, 'end_token': 78, 'mean_span_entropy': 0.4332},
-  {'text': 'or Martin Heide', 'start_token': 80, 'end_token': 82, 'mean_span_entropy': 0.2384},
-  {'text': '.\n\nAnother philosopher that might be considered underrated', 'start_token': 84, 'end_token': 91, 'mean_span_entropy': 0.6912},
-  {'text': 'William James, an American pragmatist whose ideas on belief, truth, and the self have significant implications in both philosophy and', 'start_token': 93, 'end_token': 117, 'mean_span_entropy': 0.5516},
-  {'text': ', yet he often does not receive as much recognition in mainstream philosophical discourse.\n\nUltimately, the question of who', 'start_token': 119, 'end_token': 139, 'mean_span_entropy': 0.6373},
-  {'text': 'underrated can vary widely among different audiences, disciplines, and philosophical movements.', 'start_token': 141, 'end_token': 154, 'mean_span_entropy': 0.6670}
-]
-```
-
-## Session summary
-
-The session summary comprises of the percentage of queries that were not escalated, the percentage of queries that were escalated, the cost due to the small model, the cost due to escalation, and the hypothetical cost if the user was just using the big model the entire time. Based off that, the savings by using CascadeLM are also provided. Below is an example of the output:
-
-```
-Queries Routed: 3
-gpt-4o-mini: 50.00% ($0.00)
-gpt-4o: 50.00% ($0.02)
-Total Cost: $0.02
-Without cascade: $0.03
-Savings: $0.01 (37.60%)
-```
-
----
-
-Let me know if you have any questions or suggestions. Thank you and enjoy.
+CascadeLM started as an *entropy-threshold* cascade (run cheap, escalate when the response's token entropy is high). That signal works for short-form Q&A but **fails on coding** (entropy tracks fluency, not difficulty) — written up in [writeups/entropy-routing-negative-result.md](writeups/entropy-routing-negative-result.md). Attempts to find *any* escalation signal capped at AUC ~0.72, and every attempt to hand the strong model the cheap model's work made it *worse* (it anchors on flawed scaffolding). Flipping that — **strong plans, cheap executes** — is what finally beat always-strong. The full arc and measurements are in [writeups/cascade-product-spec.md](writeups/cascade-product-spec.md); reproduce the frontier with `python -m benchmarks.cascade.frontier_full`.

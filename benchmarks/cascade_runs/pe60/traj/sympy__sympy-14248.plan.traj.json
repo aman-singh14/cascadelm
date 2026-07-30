@@ -1,0 +1,1457 @@
+{
+  "info": {
+    "model_stats": {
+      "instance_cost": 0.1129835,
+      "api_calls": 9
+    },
+    "config": {
+      "agent": {
+        "system_template": "You are a helpful assistant that can interact with a computer shell to solve programming tasks.\n",
+        "instance_template": "You are a senior engineer acting as a PLANNER. Investigate the repository (working dir /testbed) enough to fully understand the issue below and design a precise fix. Take as many or as few steps as the problem genuinely needs \u2014 a one-line bug may need only 2-3 steps to locate; a cross-file change needs more. Use read-only shell commands (cat, sed -n, grep, find, ls, git log/show, python for read-only reproduction).\n\nSTRICT RULES:\n- DO NOT modify any repository file. You are planning only, not fixing.\n- Each response: a short THOUGHT plus AT LEAST ONE bash tool call.\n- When (and ONLY when) you fully understand the root cause and the exact fix, write your final plan to /plan.md and then stop. Use exactly this heredoc form as your final command:\n    cat > /plan.md <<'PLAN_EOF'\n    ## Root cause\n    <what is wrong and precisely where>\n    ## Changes\n    - <file path> :: <function/location> \u2014 <the precise change to make>\n    - ...\n    ## Verification\n    <how to confirm the fix works>\n    PLAN_EOF\n- The plan MUST name specific files, functions, and concrete edits \u2014 specific enough that another engineer implements it WITHOUT re-investigating from scratch.\n\n<issue>\n{{task}}\n</issue>",
+        "step_limit": 20,
+        "cost_limit": 5.0,
+        "wall_time_limit_seconds": 1800,
+        "max_consecutive_format_errors": 3,
+        "output_path": "/home/aman/cascadelm/cascadelm/benchmarks/cascade_runs/pe60/traj/sympy__sympy-14248.plan.traj.json"
+      },
+      "agent_type": "__main__.PlannerAgent",
+      "model": {
+        "model_name": "gpt-5.3-codex",
+        "model_kwargs": {
+          "drop_params": true,
+          "parallel_tool_calls": true,
+          "reasoning_effort": "high"
+        },
+        "litellm_model_registry": null,
+        "set_cache_control": null,
+        "cost_tracking": "default",
+        "format_error_template": "{% if finish_reason is defined and (finish_reason == \"length\" or (finish_reason == \"tool_calls\" and not has_tool_calls)) -%}\nYour previous response reached the output token limit (finish_reason={{ finish_reason }}) before you produced a tool call, so it was cut off. Respond more concisely and finish with exactly one bash tool call. If you need to think more, do so briefly.\n{%- else -%}\nTool call error:\n\n<error>\n{{error}}\n</error>\n\nHere is general guidance on how to submit correct toolcalls:\n\nEvery response needs to use the 'bash' tool at least once to execute commands.\n\nCall the bash tool with your command as the argument:\n- Tool: bash\n- Arguments: {\"command\": \"your_command_here\"}\n\nIf you have completed your assignment, please consult the first message about how to\nsubmit your solution (you will not be able to continue working on this task after that).\n{%- endif %}\n",
+        "observation_template": "{% if output.exception_info -%}\n<exception>{{output.exception_info}}</exception>\n{% endif -%}\n<returncode>{{output.returncode}}</returncode>\n{% if output.output | length < 10000 -%}\n<output>\n{{ output.output -}}\n</output>\n{%- else -%}\n<warning>\nThe output of your last command was too long.\nPlease try a different command that produces less output.\nIf you're looking at a file you can try use head, tail or sed to view a smaller number of lines selectively.\nIf you're using grep or find and it produced too much output, you can use a more selective search pattern.\nIf you really need to see something from the full command's output, you can redirect output to a file and then search in that file.\n</warning>\n{%- set elided_chars = output.output | length - 10000 -%}\n<output_head>\n{{ output.output[:5000] }}\n</output_head>\n<elided_chars>\n{{ elided_chars }} characters elided\n</elided_chars>\n<output_tail>\n{{ output.output[-5000:] }}\n</output_tail>\n{%- endif -%}\n",
+        "multimodal_regex": ""
+      },
+      "model_type": "minisweagent.models.litellm_response_model.LitellmResponseModel",
+      "environment": {
+        "image": "docker.io/swebench/sweb.eval.x86_64.sympy_1776_sympy-14248:latest",
+        "cwd": "/testbed",
+        "env": {
+          "PAGER": "cat",
+          "MANPAGER": "cat",
+          "LESS": "-R",
+          "PIP_PROGRESS_BAR": "off",
+          "TQDM_DISABLE": "1",
+          "BASH_ENV": "/root/.bashrc"
+        },
+        "forward_env": [],
+        "timeout": 60,
+        "executable": "docker",
+        "run_args": [
+          "--rm"
+        ],
+        "container_timeout": "2h",
+        "pull_timeout": 120,
+        "interpreter": [
+          "bash",
+          "-c"
+        ]
+      },
+      "environment_type": "minisweagent.environments.docker.DockerEnvironment"
+    },
+    "mini_version": "2.4.6",
+    "exit_status": "PlanComplete",
+    "submission": "## Root cause\n`MatrixExpr` printing uses matrix-specific add printers that do not normalize negative terms before joining with `+`.\n\nSpecifically:\n- `sympy/printing/str.py::_print_MatAdd`\n- `sympy/printing/pretty/pretty.py::_print_MatAdd`\n- `sympy/printing/latex.py::_print_MatAdd`\n\nThese implementations currently concatenate terms with a literal `+` separator (or `_print_seq(..., ' + ')`) and never convert terms like `MatMul(-1, X)` into `-X` at the add level. As a result, subtraction in matrix expressions prints as `(+ (-1)*...)` / `+ -...` / `-1 ...` instead of `- ...`.\n\n## Changes\n- `sympy/printing/str.py` :: `StrPrinter._print_MatAdd` \u2014 replace simple `' + '.join(...)` logic with sign-aware term assembly (mirroring `_print_Add` behavior, but based on expression sign, not string prefix):\n  - iterate terms in `expr.args` (preserve current MatAdd ordering behavior),\n  - for each term, if `term.could_extract_minus_sign()` then set sign `-` and print `-term`; else sign `+` and print `term`,\n  - apply parentheses when `precedence(term) < precedence(expr)`,\n  - emit first sign only if it is `-`, otherwise omit leading `+`.\n\n- `sympy/printing/pretty/pretty.py` :: `PrettyPrinter._print_MatAdd` \u2014 replace `_print_seq(..., ' + ')` with sign-aware pretty-form construction:\n  - reuse the same minus detection via `term.could_extract_minus_sign()`,\n  - print magnitude as `self._print(-term)` for negative terms,\n  - prepend minus using the same `pretty_negative` style used in `_print_Add` so output is `a - b` (not `a + -b`),\n  - keep existing parenthesization behavior for nested additive forms.\n\n- `sympy/printing/latex.py` :: `LatexPrinter._print_MatAdd` \u2014 replace literal plus-join with sign-aware concatenation:\n  - detect negative terms using `could_extract_minus_sign()`,\n  - print `-term` for magnitude and emit `\" - \"` separators/signs,\n  - emit `\" + \"` only for nonnegative non-leading terms,\n  - keep existing parenthesis rules for precedence where applicable.\n\n- `sympy/printing/tests/test_str.py` :: add regression test for matrix subtraction printing, e.g.:\n  - construct `A = MatrixSymbol('A', 2, 2)`, `B = MatrixSymbol('B', 2, 2)`, `expr = A - A*B - B`,\n  - assert string form uses subtraction style (expected canonical order: `-B - A*B + A`) and does not contain `(-1)*` or `+ -`.\n\n- `sympy/printing/pretty/tests/test_pretty.py` :: add regression test for pretty printing of same `expr`:\n  - assert output is subtraction-form (unicode canonical: `-B - A\u22c5B + A`; ascii equivalent in non-unicode path),\n  - explicitly guard against `+ -` form.\n\n- `sympy/printing/tests/test_latex.py` :: add regression test for same `expr`:\n  - assert latex uses subtraction-form (canonical order consistent with printer ordering, e.g. `- B - A B + A`),\n  - guard against explicit `-1` coefficient rendering for these additive negative terms.\n\n## Verification\n1. Run targeted printer tests:\n   - `python -m pytest sympy/printing/tests/test_str.py -k MatAdd`\n   - `python -m pytest sympy/printing/pretty/tests/test_pretty.py -k MatAdd`\n   - `python -m pytest sympy/printing/tests/test_latex.py -k MatAdd`\n2. Run the reproducer from the issue and confirm:\n   - `str(A - A*B - B)` prints with `-` terms (no `(-1)*`),\n   - `pprint(...)` prints with subtraction (no `+ -`),\n   - `latex(...)` prints subtraction (no `-1` coefficients for additive negatives).\n3. Sanity-check that existing scalar `Add` formatting tests still pass (no behavior change outside matrix-add code paths)."
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant that can interact with a computer shell to solve programming tasks."
+    },
+    {
+      "role": "user",
+      "content": "You are a senior engineer acting as a PLANNER. Investigate the repository (working dir /testbed) enough to fully understand the issue below and design a precise fix. Take as many or as few steps as the problem genuinely needs \u2014 a one-line bug may need only 2-3 steps to locate; a cross-file change needs more. Use read-only shell commands (cat, sed -n, grep, find, ls, git log/show, python for read-only reproduction).\n\nSTRICT RULES:\n- DO NOT modify any repository file. You are planning only, not fixing.\n- Each response: a short THOUGHT plus AT LEAST ONE bash tool call.\n- When (and ONLY when) you fully understand the root cause and the exact fix, write your final plan to /plan.md and then stop. Use exactly this heredoc form as your final command:\n    cat > /plan.md <<'PLAN_EOF'\n    ## Root cause\n    <what is wrong and precisely where>\n    ## Changes\n    - <file path> :: <function/location> \u2014 <the precise change to make>\n    - ...\n    ## Verification\n    <how to confirm the fix works>\n    PLAN_EOF\n- The plan MUST name specific files, functions, and concrete edits \u2014 specific enough that another engineer implements it WITHOUT re-investigating from scratch.\n\n<issue>\nThe difference of MatrixSymbols prints as a sum with (-1) coefficient\nInternally, differences like a-b are represented as the sum of a with `(-1)*b`, but they are supposed to print like a-b. This does not happen with MatrixSymbols. I tried three printers: str, pretty, and latex: \r\n```\r\nfrom sympy import *\r\nA = MatrixSymbol('A', 2, 2)\r\nB = MatrixSymbol('B', 2, 2)\r\nprint(A - A*B - B)\r\npprint(A - A*B - B)\r\nlatex(A - A*B - B)\r\n```\r\nOutput:\r\n```\r\n(-1)*B + (-1)*A*B + A\r\n-B + -A\u22c5B + A\r\n'-1 B + -1 A B + A'\r\n```\r\n\r\nBased on a [Stack Overflow post](https://stackoverflow.com/q/48826611)\n\n</issue>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMDVlMmU3YTkzNTJlODFhYTAwNmE2ODA0YjBkY2Q0ODE5MGFjMWQ5ZjY5YzQyZjRkYWY=",
+      "created_at": 1785201840,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_05e2e7a9352e81aa006a6804b13c348190be90cb2f93d4bc6c",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaASyE1oqN02RFcqyDdvFewFZnEJOxA8j1GWQDfHBs_UuXXKZJCXG2oueMQTYEo_j7lF5Vdb-O99eKtqJvpb0OZxDv3d-v06UYS89tPveKJjFBuAUdZT7RtS8rHoSRFTFeoIJRopyiaMPiBfmJgX2VmKJeU9wlAHJ3DfD_AzCpebvlDwfOlqqp-9tm4YeTczLomZlCB2L_6X3WIYwI1RUH3isHxQ9qrhuad9GwSLpyluG2IMH3Q96i7xvfVVMhllkVNDJAHpko-H49lh9Q6QoeTyf7ECpkz-aCeYv8NqynMsGoJoknnLFb8e2xRoLuWCBu66BbTmEOYxjcnuE6FDwJ7RS51QntaNHuWpHRREdbbtTyb9_t6qSQnw8THgrlmrV4GQT9yNxinEPQlGQBqwyw1Rt0ORVxnufrhDgt73ZHwnmi9QRBpoPfticLI9HoXd9l8ga3_xT6Nz82Q9Jz8ISL86gJ8s7-hHUuOewD5pOHOEQMcj3yFAehpHTGvaWno8pDSpdKAdUYz8VSH6jf95Oo3UJAzajeRxMav-YIutjka5s7ZiEB9IHu-vdFiMBi3ttmJbN4GWGzMhW8qlGdOfJYztOA2QySXXVIWav5gZLklW3o91GcBOZVJzGobKqFBRamjLAUtEDWm0EYr40AImem8wDXFVeEfU8_x3U2CPe3W1DLTfEXuNk-KucdANwvkXJtHOitqXM07RfgDsscg5EsT2g-mgBZtfif2Q2pzP5xsnjUzopJUzmWc-uksA-hcK_AwPEMKOe5oZpLs3nRso3JD_FMIpEXQJ0WXPZ3hUun2X2ciOZAAQX6k9wPJc91JN-Ow6XttQBYS5Et0AfwnrNU7yQ-4azUC9YJcWF2515Sah7pTfrk0R-C2qbLjvPn4lNlTLGLMYvYndGU66Jj0BNp_Kxnn8m71j3D8Asu8RTgjrDpFZJaxObOKdfmSyujjGplBU-e7az3zTXC1hqYNmZk9ENlthtNGYN1oryZwuD0tMoZr5qZcDHW6IYZMy_yua4MCvD-BAR40B2SoD8B7W3VTXMwUjq_ThvhPTbrIb4w-Z9uKxAaC2rw6zwztYepzFE79N89MqYaA54xPK1Ey-zNKdl3ryXyrOVR6oYtHE_wURlxPGvg7a5fjd_EU3nkxI7OHuoe3kEuTvGn41qdocfGew67xiflFMiQ6ARjGEQcqcxrqA022_9TgB-sG-FBNBAtSpMRGBnCWo2kuNmt1Pr8BoDvA=="
+        },
+        {
+          "id": "msg_05e2e7a9352e81aa006a6804b1b98c8190b4175c3f37f6471a",
+          "content": [
+            {
+              "annotations": [],
+              "text": "I\u2019ll quickly locate where matrix-expression subtraction formatting is handled across string/pretty/latex printers and reproduce the behavior in-repo.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"ls -la /testbed\"}",
+          "call_id": "call_xY4nH3GMwkP71jtYvFTvcuQf",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_05e2e7a9352e81aa006a6804b21fdc81909ee065d9ef2fcdd7",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 539,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 109,
+        "output_tokens_details": {
+          "reasoning_tokens": 51,
+          "text_tokens": null
+        },
+        "total_tokens": 648,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785201842,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "ls -la /testbed",
+            "tool_call_id": "call_xY4nH3GMwkP71jtYvFTvcuQf"
+          }
+        ],
+        "cost": 0.00246925,
+        "timestamp": 1785201842.5030053
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "total 196\ndrwxrwxrwx  1 root root  4096 Sep 10  2025 .\ndrwxr-xr-x  1 root root  4096 Jul 28 01:24 ..\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 .ci\n-rw-r--r--  1 root root   497 Sep 10  2025 .editorconfig\ndrwxrwxrwx  8 root root  4096 Sep 10  2025 .git\n-rw-r--r--  1 root root    20 Sep 10  2025 .gitattributes\n-rw-r--r--  1 root root  1595 Sep 10  2025 .gitignore\n-rw-r--r--  1 root root 18868 Sep 10  2025 .mailmap\n-rw-r--r--  1 root root  7761 Sep 10  2025 .travis.yml\n-rw-r--r--  1 root root 27923 Sep 10  2025 AUTHORS\n-rw-r--r--  1 root root  3268 Sep 10  2025 CODE_OF_CONDUCT.md\n-rw-r--r--  1 root root   625 Sep 10  2025 CONTRIBUTING.md\n-rw-r--r--  1 root root  4942 Sep 10  2025 LICENSE\n-rw-r--r--  1 root root   281 Sep 10  2025 MANIFEST.in\n-rw-r--r--  1 root root   413 Sep 10  2025 PULL_REQUEST_TEMPLATE.md\n-rw-r--r--  1 root root 10335 Sep 10  2025 README.rst\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 bin\n-rw-r--r--  1 root root  2527 Sep 10  2025 conftest.py\ndrwxrwxrwx  3 root root  4096 Sep 10  2025 data\ndrwxrwxrwx  7 root root  4096 Sep 10  2025 doc\ndrwxr-xr-x  6 root root  4096 Sep 10  2025 examples\n-rw-r--r--  1 root root  4408 Sep 10  2025 github_deploy_key.enc\n-rw-r--r--  1 root root 11435 Sep 10  2025 isympy.py\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 release\n-rwxr-xr-x  1 root root 13014 Sep 10  2025 setup.py\n-rw-r--r--  1 root root    49 Sep 10  2025 setupegg.py\ndrwxrwxrwx 41 root root  4096 Sep 10  2025 sympy\ndrwxr-xr-x  2 root root  4096 Sep 10  2025 sympy.egg-info\n-rw-r--r--  1 root root  2200 Sep 10  2025 tox.ini.sample\n",
+        "returncode": 0,
+        "timestamp": 1785201842.643189,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_xY4nH3GMwkP71jtYvFTvcuQf",
+      "output": "<returncode>0</returncode>\n<output>\ntotal 196\ndrwxrwxrwx  1 root root  4096 Sep 10  2025 .\ndrwxr-xr-x  1 root root  4096 Jul 28 01:24 ..\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 .ci\n-rw-r--r--  1 root root   497 Sep 10  2025 .editorconfig\ndrwxrwxrwx  8 root root  4096 Sep 10  2025 .git\n-rw-r--r--  1 root root    20 Sep 10  2025 .gitattributes\n-rw-r--r--  1 root root  1595 Sep 10  2025 .gitignore\n-rw-r--r--  1 root root 18868 Sep 10  2025 .mailmap\n-rw-r--r--  1 root root  7761 Sep 10  2025 .travis.yml\n-rw-r--r--  1 root root 27923 Sep 10  2025 AUTHORS\n-rw-r--r--  1 root root  3268 Sep 10  2025 CODE_OF_CONDUCT.md\n-rw-r--r--  1 root root   625 Sep 10  2025 CONTRIBUTING.md\n-rw-r--r--  1 root root  4942 Sep 10  2025 LICENSE\n-rw-r--r--  1 root root   281 Sep 10  2025 MANIFEST.in\n-rw-r--r--  1 root root   413 Sep 10  2025 PULL_REQUEST_TEMPLATE.md\n-rw-r--r--  1 root root 10335 Sep 10  2025 README.rst\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 bin\n-rw-r--r--  1 root root  2527 Sep 10  2025 conftest.py\ndrwxrwxrwx  3 root root  4096 Sep 10  2025 data\ndrwxrwxrwx  7 root root  4096 Sep 10  2025 doc\ndrwxr-xr-x  6 root root  4096 Sep 10  2025 examples\n-rw-r--r--  1 root root  4408 Sep 10  2025 github_deploy_key.enc\n-rw-r--r--  1 root root 11435 Sep 10  2025 isympy.py\ndrwxrwxrwx  2 root root  4096 Sep 10  2025 release\n-rwxr-xr-x  1 root root 13014 Sep 10  2025 setup.py\n-rw-r--r--  1 root root    49 Sep 10  2025 setupegg.py\ndrwxrwxrwx 41 root root  4096 Sep 10  2025 sympy\ndrwxr-xr-x  2 root root  4096 Sep 10  2025 sympy.egg-info\n-rw-r--r--  1 root root  2200 Sep 10  2025 tox.ini.sample\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMDVlMmU3YTkzNTJlODFhYTAwNmE2ODA0YjJlMDBjODE5MDk1ODZjZjhiZjA3Zjc2Mzk=",
+      "created_at": 1785201842,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_05e2e7a9352e81aa006a6804b34bf88190aeb6f423923474ad",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaAS0z2JsGbg8JOAb1mbgHnlxCnkdumG2QwjRvehg4R3rAux8ad0_jP85Gg6nBY8Xwjck4_21kTm5ajk_obauFJbxJ4pZooryP0nXCQVvi11-C2XB6BSZRMtNkLHgRj2tvSgSOJi5m4tPJs4rfEQD0_xFHcCIDox-65yXlYTitE1sWx2Rf0xhA7_k6dR-YANZTmgozsx8vtcTwqhwNpXyx_U9BvntbV5bsA-aTf-EbqPBmIFKa5lukXMTCe__P1NLhC_ECBgCR3U5KqgSxSvDkMFmxQaRB3Q9CyIn1109ExXFa8_VLdLBRX6RrprxFpbL62FXHIs6Yxuteh9LYa7h_sk2jNRK4DJ0ddix5u_ckxRPSQRi-v71Ei75fgq759xJ08O62A_hzytRWznCK4itGTYcoO2IF2hvKkgKP_tMK2bk-B5wiLkh0sK4p4f9Gd6GGl0sC2cOiJGlqvMFYMt28-5McGMPCikT7Z4LoM8uZK3mXJRLJKiTjM7bZqvnjZHtrSegCil_Hoqq9NH2eF_nehLg8Ckk37Z81P1xu6Jge2mThUBAI-ZqJebdCHB_X8XJLEjSf8z0OmpLhgo0xcs7plLldOpFHl82vPVTsJ5BDneLuY6lHViLwLOWBLI_SU1oNADca74bucgoAl9Exja2OG8eVDRGfMEYS6rCOM5WVKwo7wERQnUUljd_TYGgRvYLGAe9Y_L9wm9R2AXIDO5KuSDBW9T8OsR1VUIuvy4YV0TAAaF-GqUiAR0MVHj2ajexWhNPWChhXMnSaRk_W6FtkVZZCmG3fv0cgA1Gz0oJoC8ZMvQ5Kf0NLA-7T4Wjl0F9q3CB6rl7DbyrVI1wejoJ7454r5dAyoDw3K-uEGSzfhcTalb0fl9S5OL2yoHXsziNqPg0keEAuPQny3i364dP8MmCeOOXbT125v1AuuM9SG3T9kAuFKfatTN_ZDvqVSo7vhuE474DgW17nemBlRJwsXx-Ew=="
+        },
+        {
+          "id": "msg_05e2e7a9352e81aa006a6804b36d708190b051637a6ad561f3",
+          "content": [
+            {
+              "annotations": [],
+              "text": "I\u2019ll reproduce the reported output to confirm current behavior in this checkout.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && python - <<'PY'\\nfrom sympy import *\\nA = MatrixSymbol('A', 2, 2)\\nB = MatrixSymbol('B', 2, 2)\\nexpr = A - A*B - B\\nprint(expr)\\npprint(expr)\\nprint(latex(expr))\\nPY\"}",
+          "call_id": "call_w2miaNnpda0Q85E1LZtbDP0B",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_05e2e7a9352e81aa006a6804b39cc0819098a93de89a528332",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 1409,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 124,
+        "output_tokens_details": {
+          "reasoning_tokens": 11,
+          "text_tokens": null
+        },
+        "total_tokens": 1533,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785201844,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && python - <<'PY'\nfrom sympy import *\nA = MatrixSymbol('A', 2, 2)\nB = MatrixSymbol('B', 2, 2)\nexpr = A - A*B - B\nprint(expr)\npprint(expr)\nprint(latex(expr))\nPY",
+            "tool_call_id": "call_w2miaNnpda0Q85E1LZtbDP0B"
+          }
+        ],
+        "cost": 0.004201750000000001,
+        "timestamp": 1785201844.576288
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "/testbed/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n  from collections import Mapping, defaultdict\n/testbed/sympy/core/expr.py:12: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n  from collections import defaultdict, Iterable\n/testbed/sympy/core/containers.py:271: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n  class OrderedSet(collections.MutableSet):\n/testbed/sympy/solvers/diophantine.py:3188: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if feasible is 1:  # it's prime and k == 2\n/testbed/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n  from collections import Callable\n(-1)*B + (-1)*A*B + A\n-B + -A\u22c5B + A\n-1 B + -1 A B + A\n",
+        "returncode": 0,
+        "timestamp": 1785201845.7402127,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_w2miaNnpda0Q85E1LZtbDP0B",
+      "output": "<returncode>0</returncode>\n<output>\n/testbed/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n  from collections import Mapping, defaultdict\n/testbed/sympy/core/expr.py:12: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n  from collections import defaultdict, Iterable\n/testbed/sympy/core/containers.py:271: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n  class OrderedSet(collections.MutableSet):\n/testbed/sympy/solvers/diophantine.py:3188: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if feasible is 1:  # it's prime and k == 2\n/testbed/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n  from collections import Callable\n(-1)*B + (-1)*A*B + A\n-B + -A\u22c5B + A\n-1 B + -1 A B + A\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMDVlMmU3YTkzNTJlODFhYTAwNmE2ODA0YjVmN2IwODE5MDhmOGJhZTUzOTNlMThmNDQ=",
+      "created_at": 1785201846,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_05e2e7a9352e81aa006a6804b670788190b40eaa07c8b36457",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaAS5yocx0tlybtebPg9p8Fe22i1vhK83R_hDhxdKpRafCXyqxIgPFRF8k35H49X32lNtpIC9TuhDEr9_Aj1aq3IC452173VupViNAz7-xYC79cWv3HZgkHxuiYxv3AVdBPhD6UxP2H7YBQoiMdTR-bJq5h9-QCd-gPDBoZYcoiScVzsBvDtEubXXQj5KCJ3Q2dcLJr2NnNoW4PBU_xrSuQ3P7cTOHAr4EaS_i0PlH6YC3RDeLtsjnEL60liHJwZNd2VJBQZ3zaOj1sM9JakADgvB0VYq9z5xePQRFPzSAuR4wGVbGHZA8kZyhS30GDpIGtbhgnOcucQaOIWmQ4IFYZgG5BYah2e5Hy--yTF2VwoVcvGnreTEcdTgjk4H3I_OJPk_dq7vY7J2NuMNaTYW1fPwM8M-0gxf1hULFZVhD2aK7Qcjf_Itet-AURp369sJYOqggRpY5SXEJo9C4tqEWrcD0xBsb3AQ9JsZxxZ4YSzP-rDBeV-klsQSe2cI8gDGA544PzLZtDF1f-fkgBdiiIkONFFAfcFWFop9vAAYQDr6ToVZehHRoT-6j6-MIWsUDLnKvjm8zgqPVRdBe8VyoNHUW2y9lbRk0ijJwpjFatNHBoK184mnrSF57srVcbP14BGvzeKGKdx0F6Wr_1rMyvZuEX92s5-QQ-TFzUKl-4wptXB0gt-2XVrOPA4pySc_hIjhWzTI2sErzqxoUbrClgNaJ0Avert0_HRJjW1Ftc4nK7vB6FgydQ6SkcpPIjrTqLi2r267EBN4pAK9EdQWYUyayfX4BllOGMN56csRowPFLRjFnEPRHTnwpSnSXlJcqkQiQD1o-ewo2yV5xaBMymrA8xmVl0LsUojMKfSzIRTsA7AT9tPCrWBtdxNzyF5DxxLplAnI7bsfxn-FTkXUGmkYyCL863u5fiFVdDyiuliKi00oyB52TGDzu4m3kcBLciqD1Y1QnZVT-gIe2ii-kpLEllmRfll3o5vZs9hikUsmD1PJFLvBlejjGL-S2p1cxaDZrV4hmqTVIBbcHhVy5uCTTirTDNec9JUH2L__oyK5kklYN62nLDZoT4G3NnWxnJWz13pp64Tce5aCkE0DhI0l0CUeL4z2xIIjBInU-qYUc55EcPpx2NwGd7_UG7xEsZ59KhL_uYrlfnVnKK8zxrRlJX2juNYR5_ZMWWudT59kxiqLxCt2K63E5v2un70x-7YGb5bEeT9dfHlemU1f0jxuABkwHRM8NBWTrXkIH-b3cswH3AQsDG9gg4MRUHda9A82ZLeMC4tqpgr7B4YY6a_2YE0igK-0mg7QSfBYu0s0bxA="
+        },
+        {
+          "id": "msg_05e2e7a9352e81aa006a6804b7a4288190993f299e478639d4",
+          "content": [
+            {
+              "annotations": [],
+              "text": "Next I\u2019ll inspect Add-printing implementations to see how they decide between \u201c+ (-1)*x\u201d vs \u201c- x\u201d.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && grep -R \\\"def _print_Add\\\" -n sympy/printing | head -n 20\"}",
+          "call_id": "call_yhvmAVdYhwox9fKmHzTeyVSp",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_05e2e7a9352e81aa006a6804b87b78819092a2950c4caac782",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 1899,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 141,
+        "output_tokens_details": {
+          "reasoning_tokens": 63,
+          "text_tokens": null
+        },
+        "total_tokens": 2040,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785201849,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && grep -R \"def _print_Add\" -n sympy/printing | head -n 20",
+            "tool_call_id": "call_yhvmAVdYhwox9fKmHzTeyVSp"
+          }
+        ],
+        "cost": 0.00529725,
+        "timestamp": 1785201849.2724295
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "sympy/printing/pretty/pretty.py:1411:    def _print_Add(self, expr, order=None):\nsympy/printing/str.py:49:    def _print_Add(self, expr, order=None):\nsympy/printing/mathml.py:191:    def _print_Add(self, expr, order=None):\nsympy/printing/mathml.py:555:    def _print_Add(self, expr, order=None):\nsympy/printing/repr.py:48:    def _print_Add(self, expr, order=None):\nsympy/printing/latex.py:302:    def _print_Add(self, expr, order=None):\nsympy/printing/glsl.py:279:    def _print_Add(self, expr, order=None):\nsympy/printing/llvmjitcode.py:86:    def _print_Add(self, expr):\nsympy/printing/fcode.py:245:    def _print_Add(self, expr):\n",
+        "returncode": 0,
+        "timestamp": 1785201849.4094822,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_yhvmAVdYhwox9fKmHzTeyVSp",
+      "output": "<returncode>0</returncode>\n<output>\nsympy/printing/pretty/pretty.py:1411:    def _print_Add(self, expr, order=None):\nsympy/printing/str.py:49:    def _print_Add(self, expr, order=None):\nsympy/printing/mathml.py:191:    def _print_Add(self, expr, order=None):\nsympy/printing/mathml.py:555:    def _print_Add(self, expr, order=None):\nsympy/printing/repr.py:48:    def _print_Add(self, expr, order=None):\nsympy/printing/latex.py:302:    def _print_Add(self, expr, order=None):\nsympy/printing/glsl.py:279:    def _print_Add(self, expr, order=None):\nsympy/printing/llvmjitcode.py:86:    def _print_Add(self, expr):\nsympy/printing/fcode.py:245:    def _print_Add(self, expr):\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMDVlMmU3YTkzNTJlODFhYTAwNmE2ODA0YjlhZTg4ODE5MDlkNWY0ODI0OGI0NDJlMmM=",
+      "created_at": 1785201849,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_05e2e7a9352e81aa006a6804ba20508190b521592dd0ac59c4",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaAS7-cS-1nV0pJEXJjV76rA0q_wv632ci5usUysu82ysJnRy2_bF7mPuVkof2HkOIWyn_7U7byM9kemOShY-Q58BoPhQbfg3ILhDGLkf_j-v8c5Vtp_zU9XY2hsJ2dFOW_et181mJNMa5LDE3jCYQgaoK19e3umUasn5O9Q4Gbwx9Nh3BMZ34Oi4Qcr4GKl1zaQwpun8M4e06K70WlSiiWZFA50NPou_eLaEvjIYBG5xSTMhWd00KNHWB7ZO_B8JdSv9V2r7MiUDHdN1_4ZQoncmNp3q4IMNbsNs6R_KoPtz3QVs46AbvSyPeYBiIkteLkanvfRDjRTSIAQmFDffJnQmzmbqJ0PEHDvpQLHjUM8kdlw1TTAY-6HGHHaPHRW92tdwzO24TNcXWGP56jQt16uI1Y5mjdXgRZjRBffKzuU_UK_iebWqh4SYZSTk64qdFcAn32f__6oZC76oHKrP8GsliMzvh3FfdJ9nWBJWHB846PD_RVDvKCuXlDQLAchJykpI98oZ9AhX00VCfvGQAyNE3DsMjPNmR3jBQReKGVUqlusvwVp0tIFpE795QvcykrCfniL3SfZwXBbuJ68XLOty6sJsR_E8Rgtt7_DUOTHlew9oG7MQC83OLea6Oc4ZNRSBY7PtAsJItB1kXeM_2kiF2Yg-iT1ctBUwZgmGmtVEscdNsV7uJEtPgFe8er1F1gojjAwStuRbNiAxMk6dv1pHIlgZD8C0zwbDS_onCXelDf-bnxsoJAmY5bYuk3nVdiWe2i0-KsC_4HA1xC1DhpA5IqotTKqx2GqIwTLii7uB5FFHUOUWtBPWq95vFjJDirz47nxwbRtn-puERUcEqMfUOwIGOeZO0BR9lNByBhepGnN5YDSvECQZRdUE8ZeGaXYkShed7RDwkL6_uCzjR2Q9A7fFB10b4PcQbDC829ZtbXR9-qwXpef8FXHryfYUEprO"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '1,170p' sympy/printing/str.py\"}",
+          "call_id": "call_pBI8IzsynbKR2mCr2OAnX9oi",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_05e2e7a9352e81aa006a6804ba48248190bd2b4b7c22b6f59d",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 2263,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 1536,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 51,
+        "output_tokens_details": {
+          "reasoning_tokens": 11,
+          "text_tokens": null
+        },
+        "total_tokens": 2314,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785201850,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '1,170p' sympy/printing/str.py",
+            "tool_call_id": "call_pBI8IzsynbKR2mCr2OAnX9oi"
+          }
+        ],
+        "cost": 0.0022550499999999998,
+        "timestamp": 1785201851.221401
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "\"\"\"\nA Printer for generating readable representation of most sympy classes.\n\"\"\"\n\nfrom __future__ import print_function, division\n\nfrom sympy.core import S, Rational, Pow, Basic, Mul\nfrom sympy.core.mul import _keep_coeff\nfrom .printer import Printer\nfrom sympy.printing.precedence import precedence, PRECEDENCE\n\nimport mpmath.libmp as mlib\nfrom mpmath.libmp import prec_to_dps\n\nfrom sympy.utilities import default_sort_key\n\n\nclass StrPrinter(Printer):\n    printmethod = \"_sympystr\"\n    _default_settings = {\n        \"order\": None,\n        \"full_prec\": \"auto\",\n        \"sympy_integers\": False,\n        \"abbrev\": False,\n    }\n\n    _relationals = dict()\n\n    def parenthesize(self, item, level, strict=False):\n        if (precedence(item) < level) or ((not strict) and precedence(item) <= level):\n            return \"(%s)\" % self._print(item)\n        else:\n            return self._print(item)\n\n    def stringify(self, args, sep, level=0):\n        return sep.join([self.parenthesize(item, level) for item in args])\n\n    def emptyPrinter(self, expr):\n        if isinstance(expr, str):\n            return expr\n        elif isinstance(expr, Basic):\n            if hasattr(expr, \"args\"):\n                return repr(expr)\n            else:\n                raise\n        else:\n            return str(expr)\n\n    def _print_Add(self, expr, order=None):\n        if self.order == 'none':\n            terms = list(expr.args)\n        else:\n            terms = self._as_ordered_terms(expr, order=order)\n\n        PREC = precedence(expr)\n        l = []\n        for term in terms:\n            t = self._print(term)\n            if t.startswith('-'):\n                sign = \"-\"\n                t = t[1:]\n            else:\n                sign = \"+\"\n            if precedence(term) < PREC:\n                l.extend([sign, \"(%s)\" % t])\n            else:\n                l.extend([sign, t])\n        sign = l.pop(0)\n        if sign == '+':\n            sign = \"\"\n        return sign + ' '.join(l)\n\n    def _print_BooleanTrue(self, expr):\n        return \"True\"\n\n    def _print_BooleanFalse(self, expr):\n        return \"False\"\n\n    def _print_Not(self, expr):\n        return '~%s' %(self.parenthesize(expr.args[0],PRECEDENCE[\"Not\"]))\n\n    def _print_And(self, expr):\n        return self.stringify(expr.args, \" & \", PRECEDENCE[\"BitwiseAnd\"])\n\n    def _print_Or(self, expr):\n        return self.stringify(expr.args, \" | \", PRECEDENCE[\"BitwiseOr\"])\n\n    def _print_AppliedPredicate(self, expr):\n        return '%s(%s)' % (expr.func, expr.arg)\n\n    def _print_Basic(self, expr):\n        l = [self._print(o) for o in expr.args]\n        return expr.__class__.__name__ + \"(%s)\" % \", \".join(l)\n\n    def _print_BlockMatrix(self, B):\n        if B.blocks.shape == (1, 1):\n            self._print(B.blocks[0, 0])\n        return self._print(B.blocks)\n\n    def _print_Catalan(self, expr):\n        return 'Catalan'\n\n    def _print_ComplexInfinity(self, expr):\n        return 'zoo'\n\n    def _print_Derivative(self, expr):\n        dexpr = expr.expr\n        dvars = [i[0] if i[1] == 1 else i for i in expr.variable_count]\n        return 'Derivative(%s)' % \", \".join(map(self._print, [dexpr] + dvars))\n\n    def _print_dict(self, d):\n        keys = sorted(d.keys(), key=default_sort_key)\n        items = []\n\n        for key in keys:\n            item = \"%s: %s\" % (self._print(key), self._print(d[key]))\n            items.append(item)\n\n        return \"{%s}\" % \", \".join(items)\n\n    def _print_Dict(self, expr):\n        return self._print_dict(expr)\n\n\n    def _print_RandomDomain(self, d):\n        if hasattr(d, 'as_boolean'):\n            return 'Domain: ' + self._print(d.as_boolean())\n        elif hasattr(d, 'set'):\n            return ('Domain: ' + self._print(d.symbols) + ' in ' +\n                    self._print(d.set))\n        else:\n            return 'Domain on ' + self._print(d.symbols)\n\n    def _print_Dummy(self, expr):\n        return '_' + expr.name\n\n    def _print_EulerGamma(self, expr):\n        return 'EulerGamma'\n\n    def _print_Exp1(self, expr):\n        return 'E'\n\n    def _print_ExprCondPair(self, expr):\n        return '(%s, %s)' % (expr.expr, expr.cond)\n\n    def _print_FiniteSet(self, s):\n        s = sorted(s, key=default_sort_key)\n        if len(s) > 10:\n            printset = s[:3] + ['...'] + s[-3:]\n        else:\n            printset = s\n        return '{' + ', '.join(self._print(el) for el in printset) + '}'\n\n    def _print_Function(self, expr):\n        return expr.func.__name__ + \"(%s)\" % self.stringify(expr.args, \", \")\n\n    def _print_GeometryEntity(self, expr):\n        # GeometryEntity is special -- it's base is tuple\n        return str(expr)\n\n    def _print_GoldenRatio(self, expr):\n        return 'GoldenRatio'\n\n    def _print_ImaginaryUnit(self, expr):\n        return 'I'\n\n    def _print_Infinity(self, expr):\n        return 'oo'\n\n    def _print_Integral(self, expr):\n",
+        "returncode": 0,
+        "timestamp": 1785201851.3587468,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_pBI8IzsynbKR2mCr2OAnX9oi",
+      "output": "<returncode>0</returncode>\n<output>\n\"\"\"\nA Printer for generating readable representation of most sympy classes.\n\"\"\"\n\nfrom __future__ import print_function, division\n\nfrom sympy.core import S, Rational, Pow, Basic, Mul\nfrom sympy.core.mul import _keep_coeff\nfrom .printer import Printer\nfrom sympy.printing.precedence import precedence, PRECEDENCE\n\nimport mpmath.libmp as mlib\nfrom mpmath.libmp import prec_to_dps\n\nfrom sympy.utilities import default_sort_key\n\n\nclass StrPrinter(Printer):\n    printmethod = \"_sympystr\"\n    _default_settings = {\n        \"order\": None,\n        \"full_prec\": \"auto\",\n        \"sympy_integers\": False,\n        \"abbrev\": False,\n    }\n\n    _relationals = dict()\n\n    def parenthesize(self, item, level, strict=False):\n        if (precedence(item) < level) or ((not strict) and precedence(item) <= level):\n            return \"(%s)\" % self._print(item)\n        else:\n            return self._print(item)\n\n    def stringify(self, args, sep, level=0):\n        return sep.join([self.parenthesize(item, level) for item in args])\n\n    def emptyPrinter(self, expr):\n        if isinstance(expr, str):\n            return expr\n        elif isinstance(expr, Basic):\n            if hasattr(expr, \"args\"):\n                return repr(expr)\n            else:\n                raise\n        else:\n            return str(expr)\n\n    def _print_Add(self, expr, order=None):\n        if self.order == 'none':\n            terms = list(expr.args)\n        else:\n            terms = self._as_ordered_terms(expr, order=order)\n\n        PREC = precedence(expr)\n        l = []\n        for term in terms:\n            t = self._print(term)\n            if t.startswith('-'):\n                sign = \"-\"\n                t = t[1:]\n            else:\n                sign = \"+\"\n            if precedence(term) < PREC:\n                l.extend([sign, \"(%s)\" % t])\n            else:\n                l.extend([sign, t])\n        sign = l.pop(0)\n        if sign == '+':\n            sign = \"\"\n        return sign + ' '.join(l)\n\n    def _print_BooleanTrue(self, expr):\n        return \"True\"\n\n    def _print_BooleanFalse(self, expr):\n        return \"False\"\n\n    def _print_Not(self, expr):\n        return '~%s' %(self.parenthesize(expr.args[0],PRECEDENCE[\"Not\"]))\n\n    def _print_And(self, expr):\n        return self.stringify(expr.args, \" & \", PRECEDENCE[\"BitwiseAnd\"])\n\n    def _print_Or(self, expr):\n        return self.stringify(expr.args, \" | \", PRECEDENCE[\"BitwiseOr\"])\n\n    def _print_AppliedPredicate(self, expr):\n        return '%s(%s)' % (expr.func, expr.arg)\n\n    def _print_Basic(self, expr):\n        l = [self._print(o) for o in expr.args]\n        return expr.__class__.__name__ + \"(%s)\" % \", \".join(l)\n\n    def _print_BlockMatrix(self, B):\n        if B.blocks.shape == (1, 1):\n            self._print(B.blocks[0, 0])\n        return self._print(B.blocks)\n\n    def _print_Catalan(self, expr):\n        return 'Catalan'\n\n    def _print_ComplexInfinity(self, expr):\n        return 'zoo'\n\n    def _print_Derivative(self, expr):\n        dexpr = expr.expr\n        dvars = [i[0] if i[1] == 1 else i for i in expr.variable_count]\n        return 'Derivative(%s)' % \", \".join(map(self._print, [dexpr] + dvars))\n\n    def _print_dict(self, d):\n        keys = sorted(d.keys(), key=default_sort_key)\n        items = []\n\n        for key in keys:\n            item = \"%s: %s\" % (self._print(key), self._print(d[key]))\n            items.append(item)\n\n        return \"{%s}\" % \", \".join(items)\n\n    def _print_Dict(self, expr):\n        return self._print_dict(expr)\n\n\n    def _print_RandomDomain(self, d):\n        if hasattr(d, 'as_boolean'):\n            return 'Domain: ' + self._print(d.as_boolean())\n        elif hasattr(d, 'set'):\n            return ('Domain: ' + self._print(d.symbols) + ' in ' +\n                    self._print(d.set))\n        else:\n            return 'Domain on ' + self._print(d.symbols)\n\n    def _print_Dummy(self, expr):\n        return '_' + expr.name\n\n    def _print_EulerGamma(self, expr):\n        return 'EulerGamma'\n\n    def _print_Exp1(self, expr):\n        return 'E'\n\n    def _print_ExprCondPair(self, expr):\n        return '(%s, %s)' % (expr.expr, expr.cond)\n\n    def _print_FiniteSet(self, s):\n        s = sorted(s, key=default_sort_key)\n        if len(s) > 10:\n            printset = s[:3] + ['...'] + s[-3:]\n        else:\n            printset = s\n        return '{' + ', '.join(self._print(el) for el in printset) + '}'\n\n    def _print_Function(self, expr):\n        return expr.func.__name__ + \"(%s)\" % self.stringify(expr.args, \", \")\n\n    def _print_GeometryEntity(self, expr):\n        # GeometryEntity is special -- it's base is tuple\n        return str(expr)\n\n    def _print_GoldenRatio(self, expr):\n        return 'GoldenRatio'\n\n    def _print_ImaginaryUnit(self, expr):\n        return 'I'\n\n    def _print_Infinity(self, expr):\n        return 'oo'\n\n    def _print_Integral(self, expr):\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMDVlMmU3YTkzNTJlODFhYTAwNmE2ODA0YmI5YzhjODE5MDk4YzI3Y2I3MTViZmIxYzA=",
+      "created_at": 1785201851,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_05e2e7a9352e81aa006a6804bc037881909a9465c3cdc5fb5e",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaAS9qjBTi6YSHjxZROr5JZvFa96Og2LYEk7lQ9YVPkLiVON_AH_NegSjA7tgFe6ZBeP74d6_AxcJRP_6a4lEtEPBH8Ij85B3oV3X15McI8aonctMED6ut7LYA0B65PWFUDDAMRZzCWHY4D_oOXWbZwiC2xTHKe1FmlV99imN6N7fJrgBT_-UUY6f65ZPpt6E-d-EfPo-GVpWB_8Gno3TXgBT-vJMSd7UnJ42kWyd14-ESOHWaPr4ygVR_oz0orhULbqtpPg50Qsd-IOSBGRSOjmgPzOfJHib7-rClTRFP6fcoJ1YyUth6_WYZoSfD0pEzkU71xJAMIhG2jI8u5gg5HHUlZ3y-Wc3Xp_G05Ah0ZCqxXPbe22r-rCzHK3-1RhrU23yDXDkeuc_KdedF2uECy8q1tBQ8GMy8En5fQ_k358tvMExijOYAW_EwKWlY6MLy9hmq1I8y9yuOzhNMQW_TR0MymPmZFJI9Wt1WWitYOVtYv2bD9nSN3L6693CmpeJxbEkyz9YuZnwRgB4jsXv0iDMy8SKeJleKEwqpgI9dj37SxnsV1rqGaq-3tYDO1dU2UAc7WD-KvsTjbNp5JYPWFWe1_h2LrHdqrF_Z5Bgkh9nWEjrn8Lx3gR96iNbqS1nXMPHjK4Cc6pvvVFI9IuG3DUC-6V3FQL3Yt9_AZYvBOlNt83h7o1TS8xaUnx_W7w_TyBOPk3BOMh_GxD3ccsItc3jzbwdR6FplmU2RC0Zd778jVZHLIYqlFvHs0G6ve8YDsnH2JTvbF7n4LBYRaEgoGDAQ4Fvj3K73nBjIOJ-y6enaa4m9tT9t1G8bdNUy8asI3E5JmdhbTIZcMBXBkc1TIhSIQp3W491hoGwbXbc7hck8XItfA_qNECRp0x512KY77t3dTbpA0YRKpMmcHy9Y5hCEmbKTi3MuBMeAupTwLZ8bnQQNitMdj6UpK9kLop1FWgz8X40s0IHcVSYkg_GWPQJBkWjhP5GEYW_kQJgXR1BAr3CgMOb9jYjdvlsX_rJ9yrJU3bZEefqqCoCfkaI8_sNKcq8E_I0Jf-xBcXTWaD4Bj5M8Onagu_N8A_tCaTB9LCsJNWUQkwgsgG1Pe4tLSC6aTgz6FmBaUJU66UV9yfGlJ6ZS-mLdv7j_t5VKxfW2t5-GHXeDJKlVyxeQ7KNnErZ4MCp_bBzl2Khq8TFgSub-Sex1Wwd_E2ILsZm5FS6ye84BaRsOCun_Uex8YynOxMDR-8MwLGHIqGvb9JyJlsYdbwKi25l3M3NR58k7R2crtFDfxsD9LfdtUrm0Uf1Qc_yKFLoah_j161mGj_m8fx38Ns="
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '1360,1485p' sympy/printing/pretty/pretty.py\"}",
+          "call_id": "call_ZTl03fGosM81PleZybtdRysW",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_05e2e7a9352e81aa006a6804bcad348190b10e267ffa5bd0c3",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 3581,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 1536,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 112,
+        "output_tokens_details": {
+          "reasoning_tokens": 68,
+          "text_tokens": null
+        },
+        "total_tokens": 3693,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785201853,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '1360,1485p' sympy/printing/pretty/pretty.py",
+            "tool_call_id": "call_ZTl03fGosM81PleZybtdRysW"
+          }
+        ],
+        "cost": 0.00541555,
+        "timestamp": 1785201853.3220863
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "        pform = prettyForm(*pform.left('E'))\n        return pform\n\n    def _print_elliptic_k(self, e):\n        pform = self._print(e.args[0])\n        pform = prettyForm(*pform.parens())\n        pform = prettyForm(*pform.left('K'))\n        return pform\n\n    def _print_elliptic_f(self, e):\n        pforma0 = self._print(e.args[0])\n        pforma1 = self._print(e.args[1])\n        pform = self._hprint_vseparator(pforma0, pforma1)\n        pform = prettyForm(*pform.parens())\n        pform = prettyForm(*pform.left('F'))\n        return pform\n\n    def _print_elliptic_pi(self, e):\n        name = greek_unicode['Pi'] if self._use_unicode else 'Pi'\n        pforma0 = self._print(e.args[0])\n        pforma1 = self._print(e.args[1])\n        if len(e.args) == 2:\n            pform = self._hprint_vseparator(pforma0, pforma1)\n        else:\n            pforma2 = self._print(e.args[2])\n            pforma = self._hprint_vseparator(pforma1, pforma2)\n            pforma = prettyForm(*pforma.left('; '))\n            pform = prettyForm(*pforma.left(pforma0))\n        pform = prettyForm(*pform.parens())\n        pform = prettyForm(*pform.left(name))\n        return pform\n\n    def _print_GoldenRatio(self, expr):\n        if self._use_unicode:\n            return prettyForm(pretty_symbol('phi'))\n        return self._print(Symbol(\"GoldenRatio\"))\n\n    def _print_EulerGamma(self, expr):\n        if self._use_unicode:\n            return prettyForm(pretty_symbol('gamma'))\n        return self._print(Symbol(\"EulerGamma\"))\n\n    def _print_Mod(self, expr):\n        pform = self._print(expr.args[0])\n        if pform.binding > prettyForm.MUL:\n            pform = prettyForm(*pform.parens())\n        pform = prettyForm(*pform.right(' mod '))\n        pform = prettyForm(*pform.right(self._print(expr.args[1])))\n        pform.binding = prettyForm.OPEN\n        return pform\n\n    def _print_Add(self, expr, order=None):\n        if self.order == 'none':\n            terms = list(expr.args)\n        else:\n            terms = self._as_ordered_terms(expr, order=order)\n        pforms, indices = [], []\n\n        def pretty_negative(pform, index):\n            \"\"\"Prepend a minus sign to a pretty form. \"\"\"\n            #TODO: Move this code to prettyForm\n            if index == 0:\n                if pform.height() > 1:\n                    pform_neg = '- '\n                else:\n                    pform_neg = '-'\n            else:\n                pform_neg = ' - '\n\n            if (pform.binding > prettyForm.NEG\n                or pform.binding == prettyForm.ADD):\n                p = stringPict(*pform.parens())\n            else:\n                p = pform\n            p = stringPict.next(pform_neg, p)\n            # Lower the binding to NEG, even if it was higher. Otherwise, it\n            # will print as a + ( - (b)), instead of a - (b).\n            return prettyForm(binding=prettyForm.NEG, *p)\n\n        for i, term in enumerate(terms):\n            if term.is_Mul and _coeff_isneg(term):\n                coeff, other = term.as_coeff_mul(rational=False)\n                pform = self._print(Mul(-coeff, *other, evaluate=False))\n                pforms.append(pretty_negative(pform, i))\n            elif term.is_Rational and term.q > 1:\n                pforms.append(None)\n                indices.append(i)\n            elif term.is_Number and term < 0:\n                pform = self._print(-term)\n                pforms.append(pretty_negative(pform, i))\n            elif term.is_Relational:\n                pforms.append(prettyForm(*self._print(term).parens()))\n            else:\n                pforms.append(self._print(term))\n\n        if indices:\n            large = True\n\n            for pform in pforms:\n                if pform is not None and pform.height() > 1:\n                    break\n            else:\n                large = False\n\n            for i in indices:\n                term, negative = terms[i], False\n\n                if term < 0:\n                    term, negative = -term, True\n\n                if large:\n                    pform = prettyForm(str(term.p))/prettyForm(str(term.q))\n                else:\n                    pform = self._print(term)\n\n                if negative:\n                    pform = pretty_negative(pform, i)\n\n                pforms[i] = pform\n\n        return prettyForm.__add__(*pforms)\n\n    def _print_Mul(self, product):\n        from sympy.physics.units import Quantity\n        a = []  # items in the numerator\n        b = []  # items that are in the denominator (if any)\n",
+        "returncode": 0,
+        "timestamp": 1785201853.4490757,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_ZTl03fGosM81PleZybtdRysW",
+      "output": "<returncode>0</returncode>\n<output>\n        pform = prettyForm(*pform.left('E'))\n        return pform\n\n    def _print_elliptic_k(self, e):\n        pform = self._print(e.args[0])\n        pform = prettyForm(*pform.parens())\n        pform = prettyForm(*pform.left('K'))\n        return pform\n\n    def _print_elliptic_f(self, e):\n        pforma0 = self._print(e.args[0])\n        pforma1 = self._print(e.args[1])\n        pform = self._hprint_vseparator(pforma0, pforma1)\n        pform = prettyForm(*pform.parens())\n        pform = prettyForm(*pform.left('F'))\n        return pform\n\n    def _print_elliptic_pi(self, e):\n        name = greek_unicode['Pi'] if self._use_unicode else 'Pi'\n        pforma0 = self._print(e.args[0])\n        pforma1 = self._print(e.args[1])\n        if len(e.args) == 2:\n            pform = self._hprint_vseparator(pforma0, pforma1)\n        else:\n            pforma2 = self._print(e.args[2])\n            pforma = self._hprint_vseparator(pforma1, pforma2)\n            pforma = prettyForm(*pforma.left('; '))\n            pform = prettyForm(*pforma.left(pforma0))\n        pform = prettyForm(*pform.parens())\n        pform = prettyForm(*pform.left(name))\n        return pform\n\n    def _print_GoldenRatio(self, expr):\n        if self._use_unicode:\n            return prettyForm(pretty_symbol('phi'))\n        return self._print(Symbol(\"GoldenRatio\"))\n\n    def _print_EulerGamma(self, expr):\n        if self._use_unicode:\n            return prettyForm(pretty_symbol('gamma'))\n        return self._print(Symbol(\"EulerGamma\"))\n\n    def _print_Mod(self, expr):\n        pform = self._print(expr.args[0])\n        if pform.binding > prettyForm.MUL:\n            pform = prettyForm(*pform.parens())\n        pform = prettyForm(*pform.right(' mod '))\n        pform = prettyForm(*pform.right(self._print(expr.args[1])))\n        pform.binding = prettyForm.OPEN\n        return pform\n\n    def _print_Add(self, expr, order=None):\n        if self.order == 'none':\n            terms = list(expr.args)\n        else:\n            terms = self._as_ordered_terms(expr, order=order)\n        pforms, indices = [], []\n\n        def pretty_negative(pform, index):\n            \"\"\"Prepend a minus sign to a pretty form. \"\"\"\n            #TODO: Move this code to prettyForm\n            if index == 0:\n                if pform.height() > 1:\n                    pform_neg = '- '\n                else:\n                    pform_neg = '-'\n            else:\n                pform_neg = ' - '\n\n            if (pform.binding > prettyForm.NEG\n                or pform.binding == prettyForm.ADD):\n                p = stringPict(*pform.parens())\n            else:\n                p = pform\n            p = stringPict.next(pform_neg, p)\n            # Lower the binding to NEG, even if it was higher. Otherwise, it\n            # will print as a + ( - (b)), instead of a - (b).\n            return prettyForm(binding=prettyForm.NEG, *p)\n\n        for i, term in enumerate(terms):\n            if term.is_Mul and _coeff_isneg(term):\n                coeff, other = term.as_coeff_mul(rational=False)\n                pform = self._print(Mul(-coeff, *other, evaluate=False))\n                pforms.append(pretty_negative(pform, i))\n            elif term.is_Rational and term.q > 1:\n                pforms.append(None)\n                indices.append(i)\n            elif term.is_Number and term < 0:\n                pform = self._print(-term)\n                pforms.append(pretty_negative(pform, i))\n            elif term.is_Relational:\n                pforms.append(prettyForm(*self._print(term).parens()))\n            else:\n                pforms.append(self._print(term))\n\n        if indices:\n            large = True\n\n            for pform in pforms:\n                if pform is not None and pform.height() > 1:\n                    break\n            else:\n                large = False\n\n            for i in indices:\n                term, negative = terms[i], False\n\n                if term < 0:\n                    term, negative = -term, True\n\n                if large:\n                    pform = prettyForm(str(term.p))/prettyForm(str(term.q))\n                else:\n                    pform = self._print(term)\n\n                if negative:\n                    pform = pretty_negative(pform, i)\n\n                pforms[i] = pform\n\n        return prettyForm.__add__(*pforms)\n\n    def _print_Mul(self, product):\n        from sympy.physics.units import Quantity\n        a = []  # items in the numerator\n        b = []  # items that are in the denominator (if any)\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMDVlMmU3YTkzNTJlODFhYTAwNmE2ODA0YmRiODY4ODE5MGEwNWViODdiNTNjYmY0ODQ=",
+      "created_at": 1785201853,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_05e2e7a9352e81aa006a6804be23808190903d849da58a9c69",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaAS_IhsVZYFErkhEPx5oHtjN-nwx_ahD0mxVtOb3zljZULi4PZPpnEhvZxkltuu0LUccYYli9LLe3sUkaouu4IRsnQ0jI4Yqf5OYVSkjAGdVgJLdGLXHq14iAVWd2Q6Jm5n2J3f_czLXAOnRCcJJNvck2LDZDjy9pSx0kQ_r6wH9Ru_mlNn1mrGbQP5qUMjHqlRyEfLW_2dvJPyIdgHFFfVSqAi010W3I02WW-OOelNq0TuSNMdLWmOiBNtvhVNOw82bUktaaRShLyyJlbzUjbeNQkBxAiQL-sNDmwI5YeUF4ap12tjJ77RiN7Ydd-HwAKlVltAwTdlC9OQ-XJhWex_sxvLo-NR5UNyALboIA2Qdg_ZlnARKsjqthVJy_v2eZwZd0qZV6Cvm18mMLLU1JjRNypZ3OSjVTAQnAadufytZht23SrYfoZek-SlLFZcu3ViZaYRVp9s1qja9K4cPNMiZtbvt710q2bd3VebsoNRBNEJT6FG33D3HkKwbxl3N7r-gbpKBL60Q8IAqxKBJnLOzsfve3bMrcdCYDMsykwknsvMN2TxasfBIxwhFFaZafl6CJtS4BtrS3sRWNEh3QlY6-PAczUO6Zc0hR2KITNH_cGmT4vsHt8iwqro-AiHu5dLJqucqm4UG9pkBjPTHEff1P456Qd0XU3W3ELnqsZaYWFV6CCbwtIh11Mz2K0NTeNGJ-zJ-qtJKYD08cHqzy1K-5YfCwF0lmhMIaBtTZ1XDNx_Dp8wVTtm7OBYV_zjHIrj-_dfyQYPmoV-G1H6JHJ0gf0D5YL6sBPuwjwTIT7PzC6Lc_H8USzD6Su0_l_AffKoo-vdVAXEKAUGsCS1u_yW6w7IBjmIJ_WDRZFMxiUxepGuXKUBkK48QwndqDSAV1W5OU9lYjlwIrlWnvenE3hANciyv-jE9zGqgENDVwaHEvj9-PZAWP-lDBk1bC2pRq6wmFHXoLv7Jigzf73HI0iYP6tu382RAMMczbOaWN5IyqOYkwq737b5on3pFM9ixOA2ll5u9dVzb9iPzBlnbV1Ym3XLzxXTRqipD_oehKMVkQr62dcFRbxkTtAcw6t9GMO4cBVA-bzDZ6rV46OqcLAQVyBmwjflj197YzQABtwoioBFJqfXZhHhRFfI6UO9lSpyAq8SKuqeqXpi9q69mY_AbuGPoOdNWZY1D2TNTrghn0QRr-32c3v_i7TwFeRIEYWfiRwSHv2tJBSm3MAqegfiDBW8dfwbv-QyMvoHFBgVBE4A5dH7n6PQa9dNbrA7FysdJ"
+        },
+        {
+          "id": "msg_05e2e7a9352e81aa006a6804bec7108190869e535021c9da85",
+          "content": [
+            {
+              "annotations": [],
+              "text": "I\u2019ll check matrix-specific print methods, since `A - A*B - B` is a `MatAdd`/`MatMul`, not scalar `Add`/`Mul`.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && grep -R \\\"def _print_MatAdd\\\\|def _print_MatMul\\\\|class MatAdd\\\\|class MatMul\\\" -n sympy/printing sympy/matrices | head -n 80\"}",
+          "call_id": "call_dSLf7n3zhPJLAZWFPe783CVy",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_05e2e7a9352e81aa006a6804bf4edc8190beb174ee46b06914",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 4803,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 2560,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 180,
+        "output_tokens_details": {
+          "reasoning_tokens": 66,
+          "text_tokens": null
+        },
+        "total_tokens": 4983,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785201855,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && grep -R \"def _print_MatAdd\\|def _print_MatMul\\|class MatAdd\\|class MatMul\" -n sympy/printing sympy/matrices | head -n 80",
+            "tool_call_id": "call_dSLf7n3zhPJLAZWFPe783CVy"
+          }
+        ],
+        "cost": 0.00689325,
+        "timestamp": 1785201856.0454226
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "sympy/printing/pretty/pretty.py:821:    def _print_MatAdd(self, expr):\nsympy/printing/pretty/pretty.py:824:    def _print_MatMul(self, expr):\nsympy/printing/str.py:306:    def _print_MatMul(self, expr):\nsympy/printing/str.py:314:    def _print_MatAdd(self, expr):\nsympy/printing/latex.py:1479:    def _print_MatAdd(self, expr):\nsympy/printing/latex.py:1484:    def _print_MatMul(self, expr):\nsympy/printing/pycode.py:309:    def _print_MatMul(self, expr):\nsympy/printing/theanocode.py:127:    def _print_MatMul(self, expr, **kwargs):\nsympy/matrices/expressions/matadd.py:16:class MatAdd(MatrixExpr, AssocOp):\nsympy/matrices/expressions/matmul.py:15:class MatMul(MatrixExpr):\n",
+        "returncode": 0,
+        "timestamp": 1785201856.201337,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_dSLf7n3zhPJLAZWFPe783CVy",
+      "output": "<returncode>0</returncode>\n<output>\nsympy/printing/pretty/pretty.py:821:    def _print_MatAdd(self, expr):\nsympy/printing/pretty/pretty.py:824:    def _print_MatMul(self, expr):\nsympy/printing/str.py:306:    def _print_MatMul(self, expr):\nsympy/printing/str.py:314:    def _print_MatAdd(self, expr):\nsympy/printing/latex.py:1479:    def _print_MatAdd(self, expr):\nsympy/printing/latex.py:1484:    def _print_MatMul(self, expr):\nsympy/printing/pycode.py:309:    def _print_MatMul(self, expr):\nsympy/printing/theanocode.py:127:    def _print_MatMul(self, expr, **kwargs):\nsympy/matrices/expressions/matadd.py:16:class MatAdd(MatrixExpr, AssocOp):\nsympy/matrices/expressions/matmul.py:15:class MatMul(MatrixExpr):\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMDVlMmU3YTkzNTJlODFhYTAwNmE2ODA0YzA3YmM0ODE5MDlmOTMwZWMyMDg4MjMwNmY=",
+      "created_at": 1785201856,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_05e2e7a9352e81aa006a6804c13ad48190b67c59da5afcfdfd",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaATCSkCzrAzygWX1gKrefoxIgrAXpaPczTWQR92AmNbhJhtAnnV0gHK0oQL66UD1lpSyMy1zHSPHWY8AlTH-sGV9hkFk2inCcxX06WdZBh2x5qtldScMuE3zL3VZ2vy751fozzeijEogeMRE0ZAq068sNRWB7WtTcsa0fD0W_pL43RT767gJfh7v4_U6TOcjk0OXLaQC5pXODJMb6iZztfwMeCRoRUm4GGlTq4KoE-uBkDBlhFfTRQfu4NAN0tcAxqkMk6dBIHorgLsfzK-O_RfQJsMAspDsJpV3EEm_m0Pkcuh7Dh9Q5imIZ_i9bvnBCihhZlSya7V7XVi84CmQPnXOzWnVZhW9VexM9u-ze4yoxkWJX2gM3fQHrzbRKyHTzleC-88Ap9amk8Wd6ejGC5aOWv63LthOzYfsvTuiHoHMl5ZqS8HywtRZfNbBeRBdFqzkkJTwrEQ1gkC1VhW-sVDoHJZO77QBlHYtd0JkmqlidRsF0MDRal8cpAb-AQxP7w0rP8RwSzjj6rNTapI9niNeynfwuSivVo79kN993muAASpH6-VS0GdZKggD5Ca1qsEZI_zQBFYhMjmCY5YYwOGVYmwvGNfq_ZJ7r4E-iVFpnI0V41UnKGMzEXHlm3VB5bm6zzD2g6SNMi-NCsrhQvFdLW0op501YaWaZbQHHqskzD_Po5uxdi0hZsqYxtplCZ1FSfuy7cGRNd5csj0O_dpCkpSsoLLuPxYFzKovlWQJhnw5bY5b7looCSmnzbo5IooQgly_d8V3blG7E8YqQkrO-RAjRcV_BCvbm_C8kX-jOCulJALqjG9PTZ5KnBqFXnZBr3uxnMSzhjXjBr7m1sW6JGFFAk_uKjCspEWxNeRpiOAC3ifEhd4w1xeieZmFYY2LYTWbxkictBJTWvjc1YuWZlxfHtaNPa3QnmGN25P-BPveovveZMDcoj2xJ08-Qhz7vz22WHD3yduLP516AqsO_DmTzRb9XUttrTwOURV4k2JiAElPNziTXB1VloTuP5BXKk_XtYDoiM_7dWjxIRETa2tOjooWctaztyPloecgaFk5_S9zPvxlcdEdBxl-NLVwbnKs-rO0LWSL_kJMzsttxkCNyCjPZ4Sm3eEICeBkjFM="
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '250,360p' sympy/printing/str.py\"}",
+          "call_id": "call_dxVtRI6WQrx0MBkobxT5ZsWT",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_05e2e7a9352e81aa006a6804c187f08190bba624969fdc9b4a",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 5232,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 4608,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 68,
+        "output_tokens_details": {
+          "reasoning_tokens": 28,
+          "text_tokens": null
+        },
+        "total_tokens": 5300,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785201858,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '250,360p' sympy/printing/str.py",
+            "tool_call_id": "call_dxVtRI6WQrx0MBkobxT5ZsWT"
+          }
+        ],
+        "cost": 0.0028504000000000003,
+        "timestamp": 1785201858.2899547
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "                x[0] = ''\n            return ':'.join(map(self._print, x))\n        return (self._print(expr.parent) + '[' +\n                strslice(expr.rowslice) + ', ' +\n                strslice(expr.colslice) + ']')\n\n    def _print_DeferredVector(self, expr):\n        return expr.name\n\n    def _print_Mul(self, expr):\n\n        prec = precedence(expr)\n\n        c, e = expr.as_coeff_Mul()\n        if c < 0:\n            expr = _keep_coeff(-c, e)\n            sign = \"-\"\n        else:\n            sign = \"\"\n\n        a = []  # items in the numerator\n        b = []  # items that are in the denominator (if any)\n\n        if self.order not in ('old', 'none'):\n            args = expr.as_ordered_factors()\n        else:\n            # use make_args in case expr was something like -x -> x\n            args = Mul.make_args(expr)\n\n        # Gather args for numerator/denominator\n        for item in args:\n            if item.is_commutative and item.is_Pow and item.exp.is_Rational and item.exp.is_negative:\n                if item.exp != -1:\n                    b.append(Pow(item.base, -item.exp, evaluate=False))\n                else:\n                    b.append(Pow(item.base, -item.exp))\n            elif item.is_Rational and item is not S.Infinity:\n                if item.p != 1:\n                    a.append(Rational(item.p))\n                if item.q != 1:\n                    b.append(Rational(item.q))\n            else:\n                a.append(item)\n\n        a = a or [S.One]\n\n        a_str = [self.parenthesize(x, prec, strict=False) for x in a]\n        b_str = [self.parenthesize(x, prec, strict=False) for x in b]\n\n        if len(b) == 0:\n            return sign + '*'.join(a_str)\n        elif len(b) == 1:\n            return sign + '*'.join(a_str) + \"/\" + b_str[0]\n        else:\n            return sign + '*'.join(a_str) + \"/(%s)\" % '*'.join(b_str)\n\n    def _print_MatMul(self, expr):\n        return '*'.join([self.parenthesize(arg, precedence(expr))\n            for arg in expr.args])\n\n    def _print_HadamardProduct(self, expr):\n        return '.*'.join([self.parenthesize(arg, precedence(expr))\n            for arg in expr.args])\n\n    def _print_MatAdd(self, expr):\n        return ' + '.join([self.parenthesize(arg, precedence(expr))\n            for arg in expr.args])\n\n    def _print_NaN(self, expr):\n        return 'nan'\n\n    def _print_NegativeInfinity(self, expr):\n        return '-oo'\n\n    def _print_Normal(self, expr):\n        return \"Normal(%s, %s)\" % (expr.mu, expr.sigma)\n\n    def _print_Order(self, expr):\n        if all(p is S.Zero for p in expr.point) or not len(expr.variables):\n            if len(expr.variables) <= 1:\n                return 'O(%s)' % self._print(expr.expr)\n            else:\n                return 'O(%s)' % self.stringify((expr.expr,) + expr.variables, ', ', 0)\n        else:\n            return 'O(%s)' % self.stringify(expr.args, ', ', 0)\n\n    def _print_Ordinal(self, expr):\n        return expr.__str__()\n\n    def _print_Cycle(self, expr):\n        return expr.__str__()\n\n    def _print_Permutation(self, expr):\n        from sympy.combinatorics.permutations import Permutation, Cycle\n        if Permutation.print_cyclic:\n            if not expr.size:\n                return '()'\n            # before taking Cycle notation, see if the last element is\n            # a singleton and move it to the head of the string\n            s = Cycle(expr)(expr.size - 1).__repr__()[len('Cycle'):]\n            last = s.rfind('(')\n            if not last == 0 and ',' not in s[last:]:\n                s = s[last:] + s[:last]\n            s = s.replace(',', '')\n            return s\n        else:\n            s = expr.support()\n            if not s:\n                if expr.size < 5:\n                    return 'Permutation(%s)' % str(expr.array_form)\n                return 'Permutation([], size=%s)' % expr.size\n",
+        "returncode": 0,
+        "timestamp": 1785201858.4307861,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_dxVtRI6WQrx0MBkobxT5ZsWT",
+      "output": "<returncode>0</returncode>\n<output>\n                x[0] = ''\n            return ':'.join(map(self._print, x))\n        return (self._print(expr.parent) + '[' +\n                strslice(expr.rowslice) + ', ' +\n                strslice(expr.colslice) + ']')\n\n    def _print_DeferredVector(self, expr):\n        return expr.name\n\n    def _print_Mul(self, expr):\n\n        prec = precedence(expr)\n\n        c, e = expr.as_coeff_Mul()\n        if c < 0:\n            expr = _keep_coeff(-c, e)\n            sign = \"-\"\n        else:\n            sign = \"\"\n\n        a = []  # items in the numerator\n        b = []  # items that are in the denominator (if any)\n\n        if self.order not in ('old', 'none'):\n            args = expr.as_ordered_factors()\n        else:\n            # use make_args in case expr was something like -x -> x\n            args = Mul.make_args(expr)\n\n        # Gather args for numerator/denominator\n        for item in args:\n            if item.is_commutative and item.is_Pow and item.exp.is_Rational and item.exp.is_negative:\n                if item.exp != -1:\n                    b.append(Pow(item.base, -item.exp, evaluate=False))\n                else:\n                    b.append(Pow(item.base, -item.exp))\n            elif item.is_Rational and item is not S.Infinity:\n                if item.p != 1:\n                    a.append(Rational(item.p))\n                if item.q != 1:\n                    b.append(Rational(item.q))\n            else:\n                a.append(item)\n\n        a = a or [S.One]\n\n        a_str = [self.parenthesize(x, prec, strict=False) for x in a]\n        b_str = [self.parenthesize(x, prec, strict=False) for x in b]\n\n        if len(b) == 0:\n            return sign + '*'.join(a_str)\n        elif len(b) == 1:\n            return sign + '*'.join(a_str) + \"/\" + b_str[0]\n        else:\n            return sign + '*'.join(a_str) + \"/(%s)\" % '*'.join(b_str)\n\n    def _print_MatMul(self, expr):\n        return '*'.join([self.parenthesize(arg, precedence(expr))\n            for arg in expr.args])\n\n    def _print_HadamardProduct(self, expr):\n        return '.*'.join([self.parenthesize(arg, precedence(expr))\n            for arg in expr.args])\n\n    def _print_MatAdd(self, expr):\n        return ' + '.join([self.parenthesize(arg, precedence(expr))\n            for arg in expr.args])\n\n    def _print_NaN(self, expr):\n        return 'nan'\n\n    def _print_NegativeInfinity(self, expr):\n        return '-oo'\n\n    def _print_Normal(self, expr):\n        return \"Normal(%s, %s)\" % (expr.mu, expr.sigma)\n\n    def _print_Order(self, expr):\n        if all(p is S.Zero for p in expr.point) or not len(expr.variables):\n            if len(expr.variables) <= 1:\n                return 'O(%s)' % self._print(expr.expr)\n            else:\n                return 'O(%s)' % self.stringify((expr.expr,) + expr.variables, ', ', 0)\n        else:\n            return 'O(%s)' % self.stringify(expr.args, ', ', 0)\n\n    def _print_Ordinal(self, expr):\n        return expr.__str__()\n\n    def _print_Cycle(self, expr):\n        return expr.__str__()\n\n    def _print_Permutation(self, expr):\n        from sympy.combinatorics.permutations import Permutation, Cycle\n        if Permutation.print_cyclic:\n            if not expr.size:\n                return '()'\n            # before taking Cycle notation, see if the last element is\n            # a singleton and move it to the head of the string\n            s = Cycle(expr)(expr.size - 1).__repr__()[len('Cycle'):]\n            last = s.rfind('(')\n            if not last == 0 and ',' not in s[last:]:\n                s = s[last:] + s[:last]\n            s = s.replace(',', '')\n            return s\n        else:\n            s = expr.support()\n            if not s:\n                if expr.size < 5:\n                    return 'Permutation(%s)' % str(expr.array_form)\n                return 'Permutation([], size=%s)' % expr.size\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMDVlMmU3YTkzNTJlODFhYTAwNmE2ODA0YzJiMGM0ODE5MDkxYzNlODA2YWIyYjFhMGI=",
+      "created_at": 1785201858,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_05e2e7a9352e81aa006a6804c319d08190be76924a6a376aa6",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaATEMzWecOuWfIt8dZ2EflAEqY6cwiP9aRuEJQULbGPOhLzJmjruDWs3FvC1yvdUBUDn0oxEP6RuQlR5ZYpTwyWs6MKeahrTRWuAFc60hXH4rrx7WT5oBnKYenqtTdvd2oBlVajukI6aqlbIGZHieYBDyE1nfXyxQGftpIYYcFvs2DcclDs2TaNBPIqzj-bWSKeHrXI6-4SgjwqSvgqnP4O4r0XFeZt5H3PEu5J-7NdxeQs0tHjw0_6UhwyrCj-nvQFPdzexc2SrfoQK9S_37Eo_w7DUgjio2f7TK5oCIpx0zftjQDDZm4smYxP-PZPrVXJ8GNA1Ampknc6USum4-kV5Im1KamLN9aLwGMsYPZYyPJ5rGuIKi4i9ThwQUGEGPGP9gBJgZDb3JhOTT-Yv0XoySW2RRFlwf8onXM-KqN8lX77yDU0FfVvgrn7mpW8zOFnt1jzWijVP1vm-S95Sm-lasP6V8ZrvGlqunWOsJtjVUukuzr_FbCc7mBeyjUMd0ryRtaeomUjUi5DBsIzRvBTrc-_1NDwXhNXG1_1XiESjnauVhEsMG_rB7UQbzwYxuIMmPVegKbt_QXZBgjKGaWg04Wtl5ZNWuN3d8WJ-CAh21aNzDgw5J0Lq7BaKhpvKzgUst7yL0OMEPNSY8lrNLdaxBHf-wbvvUKMacittzanL6YDg79f3yYxDOZM4b30OFBi2h8uIeeYNdqCldlew0-W3wN8qp3-7cMxkLaxI1SZXJJHCkpq6Jc9Dr1eVy9fjcwZk0FkDQ9boeX_0Uy2B_C66wD5JZ0gAHrTz22xUKEwlTCZq3j3FJEmAjp_qt4_Vp8dd5XcFf-wQh0pctA4KGkd1oP6gyu2WMkiy5NuonV9EM0_LAH8hmxk5bahsTOkCfI5qMNtZPKnZVZk9xJj_q92xkA0RVVPu_epUZN1fbVcoH2Fklmgn3GFzwakLebw3GS65NF6c7_wCUi9935ZCrbrSWhmULqHzblfwcXCY8ZfnQl4z5GXx6N8mvCGdGw6R-pI8GbUdf7-LGuAOh0yPmJHIZCLoLqq7i2twqTyViiShBU4GmGeAMNrquRkDNkl4zMJwKfa1JVHmw-HtP2_EBrPOS9SgJ6VCVm47mku4B9RRXIVNXabNwJAFXmRipnJy779LLZQ6blmAbgtjA22G6nJcArFnuxsG-m-W9vHWnGb4WPScdnIa5PD67NF73dT0FdRQ-95m4D3U-W5pf_YpCFJR1IB-J3LpfnlvGyJrsOvug0xoVPPLwUY1cHC_xgxiiN5odbB2sdqv1Gs73F209RG6XI3KyBzOkAJyU7vBetQzYcyx6P4TwDFD55y7UwCb8F_eiawlZa-eA-zmdsNI7R9nY9B6QWAs389ndX9MrciKIoZVUA5s1gcUws3HQtXgssmR8vs4Au3_BuCpzCYZOTUE-7HG-430dfN5RDhazWkJ1_kHU-j3gGDBkCDt12VB3Jwv"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '780,870p' sympy/printing/pretty/pretty.py\"}",
+          "call_id": "call_1zYgUA5H0v4s0JeuH6gAazYL",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_05e2e7a9352e81aa006a6804c44fcc8190af0ceb6973c4a346",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 6263,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 4608,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 141,
+        "output_tokens_details": {
+          "reasoning_tokens": 99,
+          "text_tokens": null
+        },
+        "total_tokens": 6404,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785201860,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '780,870p' sympy/printing/pretty/pretty.py",
+            "tool_call_id": "call_1zYgUA5H0v4s0JeuH6gAazYL"
+          }
+        ],
+        "cost": 0.00567665,
+        "timestamp": 1785201861.0407228
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "                del x[1]\n            if x[0] == 0:\n                x[0] = ''\n            return prettyForm(*self._print_seq(x, delimiter=':'))\n        prettyArgs = self._print_seq((ppslice(m.rowslice),\n            ppslice(m.colslice)), delimiter=', ').parens(left='[', right=']')[0]\n\n        pform = prettyForm(\n            binding=prettyForm.FUNC, *stringPict.next(prettyFunc, prettyArgs))\n\n        # store pform parts so it can be reassembled e.g. when powered\n        pform.prettyFunc = prettyFunc\n        pform.prettyArgs = prettyArgs\n\n        return pform\n\n    def _print_Transpose(self, expr):\n        pform = self._print(expr.arg)\n        from sympy.matrices import MatrixSymbol\n        if not isinstance(expr.arg, MatrixSymbol):\n            pform = prettyForm(*pform.parens())\n        pform = pform**(prettyForm('T'))\n        return pform\n\n    def _print_Adjoint(self, expr):\n        pform = self._print(expr.arg)\n        if self._use_unicode:\n            dag = prettyForm(u'\\N{DAGGER}')\n        else:\n            dag = prettyForm('+')\n        from sympy.matrices import MatrixSymbol\n        if not isinstance(expr.arg, MatrixSymbol):\n            pform = prettyForm(*pform.parens())\n        pform = pform**dag\n        return pform\n\n    def _print_BlockMatrix(self, B):\n        if B.blocks.shape == (1, 1):\n            return self._print(B.blocks[0, 0])\n        return self._print(B.blocks)\n\n    def _print_MatAdd(self, expr):\n        return self._print_seq(expr.args, None, None, ' + ')\n\n    def _print_MatMul(self, expr):\n        args = list(expr.args)\n        from sympy import Add, MatAdd, HadamardProduct\n        for i, a in enumerate(args):\n            if (isinstance(a, (Add, MatAdd, HadamardProduct))\n                    and len(expr.args) > 1):\n                args[i] = prettyForm(*self._print(a).parens())\n            else:\n                args[i] = self._print(a)\n\n        return prettyForm.__mul__(*args)\n\n    def _print_DotProduct(self, expr):\n        args = list(expr.args)\n\n        for i, a in enumerate(args):\n            args[i] = self._print(a)\n        return prettyForm.__mul__(*args)\n\n    def _print_MatPow(self, expr):\n        pform = self._print(expr.base)\n        from sympy.matrices import MatrixSymbol\n        if not isinstance(expr.base, MatrixSymbol):\n            pform = prettyForm(*pform.parens())\n        pform = pform**(self._print(expr.exp))\n        return pform\n\n    def _print_HadamardProduct(self, expr):\n        from sympy import MatAdd, MatMul\n        if self._use_unicode:\n            delim = pretty_atom('Ring')\n        else:\n            delim = '.*'\n        return self._print_seq(expr.args, None, None, delim,\n                parenthesize=lambda x: isinstance(x, (MatAdd, MatMul)))\n\n    _print_MatrixSymbol = _print_Symbol\n\n    def _print_FunctionMatrix(self, X):\n        D = self._print(X.lamda.expr)\n        D = prettyForm(*D.parens('[', ']'))\n        return D\n\n    def _print_BasisDependent(self, expr):\n        from sympy.vector import Vector\n\n        if not self._use_unicode:\n",
+        "returncode": 0,
+        "timestamp": 1785201861.1698325,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_1zYgUA5H0v4s0JeuH6gAazYL",
+      "output": "<returncode>0</returncode>\n<output>\n                del x[1]\n            if x[0] == 0:\n                x[0] = ''\n            return prettyForm(*self._print_seq(x, delimiter=':'))\n        prettyArgs = self._print_seq((ppslice(m.rowslice),\n            ppslice(m.colslice)), delimiter=', ').parens(left='[', right=']')[0]\n\n        pform = prettyForm(\n            binding=prettyForm.FUNC, *stringPict.next(prettyFunc, prettyArgs))\n\n        # store pform parts so it can be reassembled e.g. when powered\n        pform.prettyFunc = prettyFunc\n        pform.prettyArgs = prettyArgs\n\n        return pform\n\n    def _print_Transpose(self, expr):\n        pform = self._print(expr.arg)\n        from sympy.matrices import MatrixSymbol\n        if not isinstance(expr.arg, MatrixSymbol):\n            pform = prettyForm(*pform.parens())\n        pform = pform**(prettyForm('T'))\n        return pform\n\n    def _print_Adjoint(self, expr):\n        pform = self._print(expr.arg)\n        if self._use_unicode:\n            dag = prettyForm(u'\\N{DAGGER}')\n        else:\n            dag = prettyForm('+')\n        from sympy.matrices import MatrixSymbol\n        if not isinstance(expr.arg, MatrixSymbol):\n            pform = prettyForm(*pform.parens())\n        pform = pform**dag\n        return pform\n\n    def _print_BlockMatrix(self, B):\n        if B.blocks.shape == (1, 1):\n            return self._print(B.blocks[0, 0])\n        return self._print(B.blocks)\n\n    def _print_MatAdd(self, expr):\n        return self._print_seq(expr.args, None, None, ' + ')\n\n    def _print_MatMul(self, expr):\n        args = list(expr.args)\n        from sympy import Add, MatAdd, HadamardProduct\n        for i, a in enumerate(args):\n            if (isinstance(a, (Add, MatAdd, HadamardProduct))\n                    and len(expr.args) > 1):\n                args[i] = prettyForm(*self._print(a).parens())\n            else:\n                args[i] = self._print(a)\n\n        return prettyForm.__mul__(*args)\n\n    def _print_DotProduct(self, expr):\n        args = list(expr.args)\n\n        for i, a in enumerate(args):\n            args[i] = self._print(a)\n        return prettyForm.__mul__(*args)\n\n    def _print_MatPow(self, expr):\n        pform = self._print(expr.base)\n        from sympy.matrices import MatrixSymbol\n        if not isinstance(expr.base, MatrixSymbol):\n            pform = prettyForm(*pform.parens())\n        pform = pform**(self._print(expr.exp))\n        return pform\n\n    def _print_HadamardProduct(self, expr):\n        from sympy import MatAdd, MatMul\n        if self._use_unicode:\n            delim = pretty_atom('Ring')\n        else:\n            delim = '.*'\n        return self._print_seq(expr.args, None, None, delim,\n                parenthesize=lambda x: isinstance(x, (MatAdd, MatMul)))\n\n    _print_MatrixSymbol = _print_Symbol\n\n    def _print_FunctionMatrix(self, X):\n        D = self._print(X.lamda.expr)\n        D = prettyForm(*D.parens('[', ']'))\n        return D\n\n    def _print_BasisDependent(self, expr):\n        from sympy.vector import Vector\n\n        if not self._use_unicode:\n</output>"
+    },
+    {
+      "role": "user",
+      "content": "STOP INVESTIGATING \u2014 you have enough information now. Your NEXT response must issue exactly ONE command: write your COMPLETE implementation plan to /plan.md using the heredoc form (cat > /plan.md <<'PLAN_EOF' ... PLAN_EOF). Name specific files, functions, and concrete edits, specific enough to implement without re-investigating. Do not run any other command."
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMDVlMmU3YTkzNTJlODFhYTAwNmE2ODA0YzViZDc0ODE5MDg0ZTZhZjAxMDRlZWY3NGM=",
+      "created_at": 1785201861,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_05e2e7a9352e81aa006a6804c67334819092a4d1d3b1a0bd6d",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqaAT97UHKYt-l4DRGkXriEfVlu3NMSlJESs86m9Mz_uLRXXQUfLX4fzDIMqdFoBv3EqvTMQsaDHO03NvF60R9OSV-XnN71DsrUd7YMSmj9JQAIKbN-V6fYzJShbR-ujj5wb6mazC0WjY9OzOS0tqVaxlLnMncx4s56v7x1tXBA8CVPlztRngWXb_GRvnfyQkZrTcc_gdE4pU1F3aOtTSbZDsCBPuVcz45cdQLwYo-HvrUPqk8wiZ6V86w9CK9ZYlYrdDxK7at0vXwxxx1T8D78Z_ydExbFJv907nA3V-bGy9MMzb30mfeYcoBkoGtZKreM8wXDMBRe4QkpAErtQJIIf2lcwu-XxX29PjpGtBNIao88BrUJstDVcuCsNOZwDjCXgIuuKk9ozypA1MsbAeIUB28djwoaB8tuIo4m8lziQpFu0AOeP0MLGGYbIcpER7USbhsp6KTOrnL9p5OYithCBBFs3InvlymADW6rIoz4BUiX_VplUxwKgJ9j_GxntB9eNZcIBtuyMbyHRcUv_CdN35HQsEmMsTCec9JwN0z6GK2QcrZmvquxB6BPdS7JYiAa0uLCckv0pkF6WNGa6T6VChK32upI3WE3orMK_lghXzxOpbiYSoRMF3SLE5-cPUfUXnek0X4juYFJJ4kD7Val0BlBNcPpC8_p9b0_dMZYfhv7wyf03c26SXc5kzVIQucWf6wdZZkSjxyhhsqJIt5Zllb8IvezWe6ZHnP9aEOiQI3YJQeY8z7iFtS1AI-88MKscdFxo08iSZWi3EGV2KvxilyM0Z1Cl8dYV5Wly03Z91TZL58EFHEFU2bCl7u17-DZEEdp120rR8R5uFjHNdT0U2JlguG-OdoF4Yuj_V1PZkxf_y-VduH3Da1yojcWA6d5JKcoSvoE4jFybKClg0BWqTbnQq9tvoJwwaATBMX0aKM9glwTSu2vwBwWVyIDLF5ddjyoCakEp0iZzlJGWKIAHdDTAjDtXRtahQnkKVXRoQYYZLL5vMbHXsnIEFDFNL8GsBzKTRRxMEIXksXL4PXXx7z3WAj9E5UUCizJ4qotvTrzLk6QI5IKUrXlYwh8p8Vhmhmk3tWAY-3-nfBCz96BsnYmRLODiGfCfudQ5UMnG2hxvb-Y7CZ_gVB4t3_Ns4EjI6qLuvvq_6W3lKs3zAU0XL0ke_PeQCICmihKVxJC15FTl5x7IHrprFxhYiO0yocipRlGtGPv2cOo50J0v_M0lBPlq8vvnxFc2AiQvWI7WoiL3BKRd9UhurMZO0zqV3Kr39x2CWWnYDnyj0LernSsAQtJUSoHs2MyGt6s8yS5S9YNByl0lJt7H6pTB36wDX5PQ3shQSO52BV3SvR8Nt_cwCfLjZDWYX20Rq_evv8trWIyGm31dALWfzySSSZHhxlYqr4rqCsKfkdHtC0GSXP99PJL4Evnmk-4tMfu-eB_5RaqOln_1yPVJrhBBPUMhfJuKyka0qkGuuk8VR52cu9rLEOlJGrTXCkS9PteXhMkpHcsJFTyKiaVSCebokCdbbY-nY-9AQMlRVdVE1K-MJWsKQ4FKFHgjjtJohVbOa4_ZUui_uzs9uCUhUybiDimvRN7UjE2Z0p1W7syUUl3-XZ1GZ6jVxPw2Xky-exe2bQGZ1NT39Bx14wBx2QCl_v3fVc03g2vKQXQWCBeaCrfG_IayRDuM7m_uFePsCtWwRMLPQnvKMId69iMnLeMjCY5pbk1AsHyq15YV1Ep4lpL_A6_CGZG61xgJxX14sfV_Ti39GCZ0AkWu9T_Pv5FPcB4Gg539o57r77SdAholpjeOvEbmyNvVcspTNfRVrhNAJnTiOVOaw6j6PnL7NgFickzTQGdyO50ugO0OZYyByn6ukmi191mt1FqgD3l4uxsbyWVLJgf_xWADdgGkzsbuzEnGMxu1_lqCsrfJqsyM_aoPBehk1MO7hJPkaOdt_LfdZFcWHsgUA4JT3Kc4Sq8PPusk3szY0QqMesCxocDKzIlkABBp5RK08BA5d_zRsU7IPSXM6GSK84e15epepdEUmvk48wO94Jq_KMNokq7lRLF7c28zcIK2CZ4QzsqG6yPr1GEVDbyTIR_7aO90D8-r1D5T88tHqqmgipcYfbTMorcVkwiVPUgPm4Qd_2uB5Ex2zJc_txLFQZeB9kDPTkMwmM5jbMwiJ6j_j7EKuCG-WGFnemMf2J8z78Pg5j0dZfXlwjsgAebgKkFmkksa-mv-yy5fjoQmvizdJMpZ16SkJ0MBmj19LSsZ1N4-97XL4Ut4S8mcKQdLI5i0IjUCdrewITP1Kf4mdvPikyzjLTelHYaT7AdKwnalc2xWHuVhslih2oIkQ7BtlgSJypS3f6e-PcyKFVOeKUzaYrQbPdo7sb2e0HppHqBZGwuOc-NO3xGHTfm2z_610KyU-sGZt5zbInc06t3YDmAA0XaRMlJWnSynyNRC-qppOAdOcp-lh5TmEfAbEc2FCdksfrBR9Ztr2Qitl9kj65AyFySfbbGKS_AmxR2_PkOPIbY-KCKNIHxcgIZdaXQkIYEuFo6S05fa5tjp1khEdd2z4MgljOv1My6YC4aKOsroADrFknS0iWw4weT7pJ_-8mg2rf2trDA_r2Vs4pFZT-iFI5f2p_OotyIgaeRYan0qB43-gT5B7hXZeAA6TUdNrLP__zCYtN3yoOS15aMrGt-k8vIAQ_3lMy60WKwIHhXq3jI7LUE1Xz9eR9yJ5IfXYiqgzCkoWVeImTzF6R2l89S4tPv8nGekyLv91xRd5AzRC5msvQUicKmJF099hITWVQX7078hMV-m0aofK5PUiFf1u5BT32DUSsEvnfzjNrhDF93ZvrE72miO1hTNu8pTMAxMYsGDkeHQwEJUn3S4kdurfW63g4ypsqx3w3sBla2FYpVdgx51IUgn1XfmE2V8uFOUHP43UztuVIzdGsiUGf2WWJYJOYPAEGS9jGjp0Jz6OrxAzws4mH9WQ9NuXVuQgcBBCIxmdGYoczA9H_62W1kcpvv3YVVPc4CqRnsz2Eul3mCHm-IuSGB_q30enrjKHPQNGTYKj4DKqQRK9bs07ByXXVPAQQKOYXWz4y5U-oevrmY1jY8_z6RAednz8wm-cvnNZtp73zyeW_kyJiJyuT_gCt7DqGqEUOLqjCDowV4EjJP3bgCOr-rZ4H7CUOcDPG9OEu5LbfHEviH0h7hXtAFfZBIZy0VuP4H5cm54QXGfj-me-dAU4M9ZI5EifKMvzQgw6VoDXBtRpBqtIqKar1iS1yDrJVS1e3oWx1vAXXZaoBls1ghu1LNOCKPIyKBfS-hQMNTORugJfVlK-Rkng1BxilzQwXqPiDX-JMd3oysE_Zt_6CMivG3Nf2qlE5-s8coQFsMxlhuYS9O9ku00gv8wxzzS66llfaHaSLY-sDteVC3XUx1NrEyIBuephbEBOS17JTke1StcACPSjlAzKIJM9szgC90LIoAnRfFVKoY9aBxJHGZpt_mSG0d5kS4Bs1IJPw5vQaIXw13CtdCnWMBqKELam88H0zLgrWJP4jEyTwU0l5_dGTla0OQILZwaH7zjTpEeFc3iXCF4m8K_12qzx3sA9WTNaOzcuNoLrYdwAjDtgJ2ebTUzpOn9CF-cO_TkaCBcHYrz0sHPqG5gAQz9Q58JJ00qZcoPOQtCNiz2c8EtRc4YorIC3rvQ21wQGXkJ8bwYMe9aAz1LCNxK8mnZpgaGQqPll194AWDNV_BkmNzelVIu2M3oQ69XXsQuXH-rUHlH4j1LmRUdLpAS5e28QV9kYY2f_aHyjw1RC8GZnueGQiGBcZATXf0K83pO4v7EZJDZicN2UbkpDEPPHl2aiypwMUU8cysnCYIfZTY2J7ORny8LtTLK9aYh0fHkJRdEhspOLb1JNtohgBE8GOxIkSKXmaGgYc4weCC63hth9Y1RVa5EFWqAO0u0PHPlLyNKzW0vCye0jl1UiKu6wxhXWBuUrMLkw57JdvdNbgDuWBmyFKBnlhyAvO_RpWf6g-pN8CXilF_sD1ueictTq7Me6OEZHMvLW1X9dg6jGs0knu3FfPAJbIaaqdMKs11Uu30q6C9G-y3KqjE0KmS-KkmWF6_1XIpSq20o2_GIoCqrpLbgVT_vN73hptZuVvrhQJ5_p_BZtsa_fBAFQV9kglD16QMLUSKzxhozbOlzRS36tcq0TcMJ9ftM3Cebs0qaqvStKHgTREOEczUW03NYa5ooSI1kX-fY0PLGH5IGMIm5nEevBJuICZX3NNWO8lO18_UekvUj1QsreOTRgz8NafKH8NBv6iZkGEjL3hhFpNygFpRq89xeca5V3-VQ_CEnE0pcFz9_2sSrwzIs7I1bSBVY82DjC0uRehG8k8bDxydKMoOp2QCWvb-g5Yf7UtJl-XNaHQCwszU9DNqEPeGfFQ0je9JAWTdu2S5CwOpvFcpQrGG1B6B5TbMZp_azbehAGvlnguo9ovm9selRzDsqKrpO4cm6GwLg66WU6dOCeGacnci4ZSx0sE9M-Jm-EzUogjULK9WOhvewQsXMDbJgFrgwrhZj4C83XOLjFXXsptG013Ornga_iUEYJjiAobUJzBEM9OBM2ziRVDIQteKp9l2CITkvacYnfL6bOSC8Zvy0R4hWKNukXZ9uOwO6g-sqU2xp1VhapZhMkIXb1FkQi1GVIfgnNZPAxP2mDt9Mit5qwYWCfV_y_2jS5CUrgLE4xrwGQPlcZ9m5y8IVnK-heOHKcT6CzOSgGXDm_C0FBm5pwD3qaRjGQlbp9XeEM8MutPVP_vFeI-en7YDW2Uoe4lbcOK7ibVpujCEq8C4eFKYb-ouU84hCXdB9CNxd44gY5eNegDV9J3OVFRaULRtivEPreAt5AdzTWSZsSqNbQtyWAvIKUJ7vXMZOpnnFjslBFH6muEaPUtlbhn0z1NXjVUExeMbJbq-_7QY8fQzikgOlULsrlr-HC2wqLk2Op3c9qrAnkhJAY0MK_kbtc-QovT1lOMS-G3rvXtklHIcdJQZJr2xLsgZd4cOIc97XOwKXCtkfy6M6VAt6ZD5SO9ZCr7COmPueWHCQkcHD3-tIiCQPkFl8UCADKZdfyL-Rpp9WkXQ-dLAh-9Tw7zWadl5phegJrXpBfjeHiXFvGp_aDGtarVHVjlq7USon-RESe18uYl4PNG0UY4lYESYYIrHurBKMUIpu9ocNCT2Vhtn6dmQbMR2YWEYU6g5aeDbCvAoRUPzxP74mft3yeJVU5_bZjpirV0iDkrtIP5u3GBcE-dqD0sdj0ahI7sIV6TBKRnPGLqdxVpUuKDtjlUAuIiErnDFKzsy0sLaK3RZrcTacsGAEUJzuCPUM2iKvy166h2naErsWs7LyZMxPJ5ck0Ua_LXBYmy4MLX7-9ip9_PT4TlOnkkkKQfgOdc8gKelRMMjSi_hZuNkX0uDS0g8cTfFQ8BJXEjbF5H8Pa5i7O9EJPThu-D8wRQmMY-MdIqwWDquJLEXdyMN7DhkTCLGlwgIrhPZiE-h2fC3jiSLXzf5qy5-LjkwmqrxqWabk0JFNlMLWIPCRX4DyEPKSL4AkePc6a0DHCH7TWZ8eO3cbpkLrR4_XzmGDeBpNESGxevFJ14fkHQG3Ijd72-tFndb3X4NiO4HNgLe0Gz02cCCN1JFfg6u9_37atgcEAFkEF3mZNvyevPtOuLM5PpSgjnd1YkNTvbYa-QIJBs2SP8s2d8Mf1n3b_6xWekcjbwlLwf7Fl4VKG2OS8Hzi4Lp5r4VgEG6PnXt4ZAM42op61kSqbAt9q2ZnpSw8ASScuEjZEGyV4eCc4NjPBb4hx71o0BD2KGM-zfghYonaI6j26daA0ujzbOH3qMVxSzmH-JyPVNB5uGlJfrVNnxUEkc3I6RUUDYcwLCBFHzAtJ9WC8MLeMOjaMxuGxtUFmP1cvqmussHNf45evP12dvH3hEvQ1tgmbGL3uxLtZNIwRfTh0WhOtadXQbrw272LExrdD6-6C1HFq_Gy-9s8l69hX0QILJqfcv4E7mYdWckyN3h65a5AohpWamZX5Tt0RLZy2Obe74y6raFqitV1zst1HKM325FZBa8tNMVKiVjAhO3ujElIwW0lqSZGJIdICUWAOxREqCHVgRn5iR5BXaDCCcqGfmlDelLcp28tYVTUtp-ioD0KRV_p2x8khRsathm3ik6bpLon1pAWwUOTjQU7UjaNB9SWqt3oh5okUi9HxOIMOoThCiTMdNvHtT7W7-ralYxAd_KZ_mMHNN5ZFQ0_fO999uTjm6BvpYaCxTd1QSBbsBUdgjVRpY4hRZDRaTcgYiG_OJEGGYsuqjR9UfvzSbAoBXm6z0xjvTsJSxjaj3-0WhXVLEhBdX5gGDOjg0CfzvzydUl7CvJw4pTtLRXSEYtcXuNxUixGw3rSZNfHIxIAQC7qB6tU_wC-Tw7H6cEGoozOg72bkonrTg9pLrwYpkc90nsC9WDZ91_fhoJ5r7vgjH6B4jHtuckWa-BSiQCrkyzsnw1luFaNAIGzyi3YTdoqQbTn867rGuY77jkgtLaCwGl4icN8Rwf91QaPbhFpTSxiVoB4xpQYunaHhoJWEf_lTpXabgH9bi6CuGgZPJZYqObnsDdzhhquu_fsh3c8RpewRp3nNs1EsbWaqwtGOtSuHZDPStO-mPWNo6GTh4a_OCtzDTEDx1TLDwUowf4CKHcvpyJ-GwfGM3P4QyI5pFVwEwQwrwoF-FtHH6_bslG1-Zw5z15E4sAhpdP1MegBXglNMOtAadOSZsVVgq-KW2ZkHNB1I9zOI3kEmiyL-_DsjiBYf7l7lfsk-Y5gLv2g_iBdiicO8qaWeWZgTkOt79SCga95woOqvZvGW82f8TySHrhCpYoRl-qO4S7LpUZdKrSYSK7XhyE-cBRE0d9mFgZ28swvo7QSxNq5bT8mGwLN9o86yLcYVdtSJN0rlB1bpGPfOsVOLs5Nn7jhaA2RetD8IbjFhLjqR5p-s8le61W4T68FfZwOecqYpAaCPC968kMiJYWomjjC6ThAChXLTAoBw0L0doJJ9F8zJrGJOEJWtFwpFY9OyhS4m-Nw2NUepD-lV9pYfsIBCYzv8Cq55egjBzqaMvjEk2evwFFI-M8xF9EvNjhMDVirNKbq18BM9TBU8D_I0gKE84zxlTkKxFC_BdI6eMLLgf3ykQQIFowmb6kak0tO7WlyEzO4TGrPW3tagmNm1hsc6DAUekFLL1vz_n59-TMVvkTyD5otfCoBA9mCJb9SpBxyGS4NTds-tvtLbwJb612hXYv5TftVTpnb0kb9ap68b-VxsnrophQ99LLAMJ6hDvtuVQKZw6atWXhCGAEGzdl72oXmirluB5JGuIFDylASLb7q073gzOz1bFt6nt-MbUjwDwZyoLhFG0xvR3aQBuJ_0Bi3oMC4zsH9wfSOK3D-qMpWphbU3rbmvmpgb898fjcecNuAhhy4NhMeQZwzgpfStRkFOdP78v7f1SK2114qKHxKcA18ktlzvti0xSGUIjiFjDLG91pvddL6Bwwq2YM_Yx2UA5VP-hISX_8B6NmNvMrUK63hYqpAofhyKrtECINvxofMCc7KU6Ly-Obv__F2-QcYJ-KTLm_MLYC4nIlOj95hq836ORnZ7VB8Yzv0BLyOba1Tj_lK66mA8cX7ZTXJ7JV_Ik7MWHd288pObm82qbcz0_JCMJJE1YjZkIqyy_PaQcPX52knwd8Ay2NSUIvkF2QRC-jEzFQdddPQWDZykK-OfhFspqD_d8H7YF_y9nMulz5Xs_DHzDZEuel1NRm7ezmRKRhsSpCP5i7z_apglcQxOIVkFHVGeQXQ2jWwo58_87v5_1jR5ctTaUBA45YWO6HuYfsCoiRl3lg0JlHJl2dOV2JJ3NMANDuY-Ud5Md4ifg027_qlXP77Kbqi-c1hJ4whyAcL0l8AeewlY51E3S1wLkXSQL-VpA6sdGy8xlZdyYeJu_J1Hd3zOKKQnHkoO3VdICkCYcwZ6UTAEUD_ZzNzhHGbgPIW6BhvyCxzlsEN957YucO1lzc1YJjQPpDXmvJXpxn3u-YunTbsIahsp0ZNaND9dgEM6HFotZjFiQC2d66SET68BN00L83Qrf3j1K7tHkNi-jcK-D92_w2DbnI_gU9b96x5v4Y8HGTDx1rn9IfwvIyAriTOr4Q4ZJR83EAuUM8bz0oK5E8GXzpup7a9iAdWc-8iC5RZI2msjma9PaosNxl4zoGOlWhbqV47RK0kjBxXRk3x5w1y-M1MIomacEdhFWtS_z3xK23OBpWDLtnzJ7pOhFI4voo3SWvlSby916FrcW-woxWQFbbUFtMkWcxBYLcsant08S1SVbVsFZ1v5H20_u9P4RtwdZCv9tHfi8oCpSAVBuOghUGr673-woEz72Q2bCNqvs88ku5HL0cKKCmWaL9INAMXPV9dVp4Y4SP-HsqBb8ensJFUvmraCMKoLj7uxI7NDDu7_hdzNzf8IXUr3UckkT1S2jdAijlz6whUFLMRbMI8TvZOrOnvUGosMxz4kPVjK5020dJ9VFGiWm3gtCnJKS-qHTLHZt2p6Vx0FY6RHG2Kr6lHokJgx1UHuAvZCKiLbXQMgV6eO65jx_3mP6cOxVtktKO7kJ1k_S6RRIa7cCU81wKAJPjgi67MEj3G-d2W8BEl83oX0G3HnnsNDXAjzRnwpyvOei1gY26WoxDJdJA5h4m8fB5szLMAbRBK8mgJJzDu8QGFPGmXymuez_uqOFi97_xIw0fDgF67UuApjQlTb5ns0De0cSEFmihGo7hdC97Qcm2gPghyVXkcmGwdSAofLx-8AufnBtF38FyfBUDFN9lpNcR8WwgqWnDUN6no0AfmlyYCIHaaFzYCrgKAU8o0zfnbCgINhrfK6yxxZJV7kpiiSyZZ7sHmh-hWe2OVdX0GvuoeaywsO6HFGWFDimoys1NBA7RIirTN7guRwx7fkGpd7wri-e6HtgTMohnV6pIORi_95fd6p9qlllAR_4YvTQ4a4tdHMcFgmzG4U-IELJi6RNj6WBItUafZxxgcql-05bmMd8Zv2VAOf5Uj-tn8nOQ8ylku3-Ic6Q_P73EYO2k0BiV9vSlo_Nlt-pa4ZRtFNMBUDOywCeIMzkydgR0xrNIz98g8RL3Lfz0n0NRNKbSZvx7_yF5M8noACZddBgiYMzxWEfYWdX0ImlIeLsuXUQ-r-3JsNCXo13HyB3ljlEaTQVvvmaXlcKLxsCmaDrEQqqK7U1SEADI_xzY8ywL4D0pIiitLJjfNwrGcn86tsYVtD04qtX_W0xbfInL2YBfisiQU7I3BOamAGeGYCgKT_FtE7sInZI-VlZLiuAcn719ssYynNFvyvWF37D1MVW_RU7aOT4_z27JbqDT22GataOZhSBptJDI6Vfuh7SiiliyJT_LsEQGiQdK_obJme1kT1NBI2hlbJRU86wee4tRXYFe4dwJR33CnijH6PxpwTVxT-wARhRYogS4GkON9mU53lzoYvWkLroUkWeUpb1s523xM81BMnEXuHVrftO-H9irGTNwJN3-vBqW5ZLHrt5SW3nvpqgIuAgwAP4Aj7PqYIIc7Bc5KMbQrPv7gS7-DX2qG_KH7esr0ii_j6sPunyVIm7HRmlA6nF2cboTQYQ6RKkODc8yJ5YM9ZhEAeQDMaRGglErrT6OoUZ-XNyF7V1Uy9pDYxBS3bsUd2fp9ctQeu-ZZR-DrXvu3x6mzlXxNR_SdBZyOtyKKppa23kwhlEG_ydsW3oNEbs7L-BmQ4joNf58UIq2nV8h891TNwizFpfnDlBt8JTr3KgrhqRdEOMoJat1zh-WBrh4XNgLhH3UqU0wnhlWHoq8a52AnS9wNYZ6lcV3c25K8VmbgJASOUvRAol5xSPFog3Am6Jgt15QomvUjkjNclvWzCEXn_MzN4yVrShPiCG_6G0F8vALFtgR_eGx9GY-VTsmUPRx3x1otQxoqNHu7hMvIwHs18xmHZoW-OA7l-2ihNge2ofTloG_VzcOj2s0fWuIQlseAerkAIW4PjhA3ecF-AfA1k2iZ_t5pJaQv52709uoss-40d7-F_D6M4y1wiuY5VVnyRa82Y0I8bWuX27_Z7sH7Ft-l6kvMcZmi_Ii9sZQFE6UqyVn0XO0jb_XErtm0ZgnoDmWoYug9c3cWdM_yS5__6qDeneeYoOE83IJBUg-TH25MILfuOEDRB10ApHt1yLUIGCwmQZhQStwomC7lE3YkdBDTePPzfbYESguQh8nPT02LxtF5pqgky3CR__JTjs7OXSpv1zn1DekBwwIaucZOhQ-JYaS00g9QL_nHAQD3MrCubg0Nh62FXQ0YKJOY0pKxjYJTAF3H0_jTvOFOZcZ-mtRaown3TijLhHHA-hVmcoLFNoEelyhFzwaMKukznDRXtRzeTP7yOhdI9qkBrtmbHmAW_i8joth69vkuZNJQuOcakY5yfy4b8f58QE940HHMAvW4BbLMdMV78Eqc5hHcQtpBbjeygzXb66KdaNMKAuhGLhMbuHEShJY4ZQ336BkXqHn06_vVjB6LDcwiG0O1SS6cfzmJjcNu0ZsAPJ2M4KGhZ0ZdbQYC1qkvpxo_koV0z0-pXuheC1cqTUlPc6xpqpUHfDBL2ziwSGELPv41Kq_fYXqlRaWSqAgSqizBtFa7FF04cY-xNGtAC7PPnSZPpQDr93GhNMbtvCyXXAXvP6svhUiX4F9U0ChEtmg4r1_fILMBGeJw7eNIbpPjGMc2gw840wSr3FUeeIbRa_TAzFxJxN50LM6M-B3lpt8LN6ZJeLjgbTX0fLvGJ4fmhplBJCEb5xvNjCIrmR6_1nexNmP8BlCLoaBFLDU5JdhkPS5i-CdYgnyKYlUAqGWUS6nsrBiRFSDnPNaQT9RmAEpEGODJ9lx012vZRgfWSucwplCSjt81jjDI2PlnOYcXBS5hktKQQT5PKMfLc6hCTaqYs8ElzFGPLOnDC22n6wvdEEC8BRpqypVP-iMNfvz9n6M3qT-5ZjOnEoAP2W3odz5lOk7ntGWWNyFSY-Q6t_iqPe1LMrn6KLCrl3ZSQOctLnQRGqLp5t7c7vqGNxsgCIxkTN2L9lp_IgqwO-fNbYce2jcNxdWNoGTcNhDe1bu8mPNGFJWlczo16t7DwLRLB6NBi8f7UOgUmZS8c0oIciYXHfgrSm6rA-nlrQsxzzUzG7FzAlOoy7DqcG-qZnDIblhhUPSjwQUdEoZyXolSU7HE4m-ki4bNbX2TOomcgztevJX7FPJTKesXuuMS0bxGtrqoAjF4Mtb5zCXC8SJp6BXDHer5---n9c2Ytv0U-kU5Pt-cJ27UmQ6GxnEi-J-sPRSHva6FsV0NiwD3nNU_76LfXhNL_hkUj2zdpvn76xjegj6sX5pjFeLS4kPRdZx7fdCUIHHZTKkEnaNX2ifYLghIAc89p6UQky5sKgnT4JaWIZlqRuFeUVggveYr7A4RKP_OTieQBE94PYmvjtDtdaVg5s3IhKT5_E3O-Yokx0zw_T3I1v_fxRslHjpTgpxiq4R0kxH2mJQ_S1Cv3Mg0RIRzNBJamldwCAtkG02Lx04RUh3YsSGZeQ9R4clF0uBWvKjAogpWn60eC0o-N62iPJyEvXGRR3a6aCmd8UtgsUT4QjAhZxE_mRLajUVlHbSQB4otWZLgHbJ745VMriSbZvyX4ukxSSHbVg9-ARupWmbHBtdSwn2nXSNegVK_LBQbI06I4nZt2WkJprkmMEC8Jpg3UzecHJ9uW_GjjUrlCa4FM8UAI7sVvp1WLTHjKkQdtT78pu4Tq-vfnMkP_sipYpggDSJot1hBjtkGVq5wl_5HdBDrnPREeZ2WifM0fHA_S7br8GNgrgZvyW5B-O0zkzpSGHmF0yCybKGwyAmtfDdlylb1_j6fGIJDga0avIM_47f_V7j2jwl4_p3Hce2_Z6NuyST0BFMuYKnTwGnbMH-TrAdc-vOdata1QOg-u3D3Jmj83VWpXiaRRc4nOj_yisL4pBwiZxpnybcgkEV-RGkIimRGolcrBoihHCsbfWJzsdetJEOoZhBHdzNBfMHSNg2N986wRzPd_S5sAPEZUIXLIF_YQnKhaBPYFvp0I1pHpq0sDKOtDAL4uAiw_lpEMxPGX8I9f68bHnHsHHhHNxaV4CF0k5jZPG6KIIyAGj791vkEILFjPhPLoNetGW9rIKPmOLb_njkmqHNWovC91JTRxTIJ9fMtCM1nHZzKym_LyLqA61JpMT_JjFxsSDlqibaFtsv3hyqqSK2DSwxOBBvsL01DICi7rLNpse1K-tJ1g8_9dHep6LcrrKZIFCNWTHBWVathkcywX7oxoHVjQDUwxOMR-zJIrHrY4p5ZeFq6mkhF7xFececyeEBmyRBiOkXPcTzryekG2NzRXYldh946XxAAyKmevvk6Z1csJ_2-slfqi6cf6s1N1VyZbKPhjlsVh_B9t2GANcLyY3z9FiOwNHTjfalJPJDis1jaYZD1ohPdTlhTlUJ__OPrbbD58cmLvnxgc-enR5fiMJDqzH1SfpPO8FgjmY_aZBkm5Wto-ULSnqIRYGQpkd2VxXS2YK75rkv5_Bim6xh3RvSpPII9gOgLnr5j0M99G93kZJskYjsNeWEDuXeTfKY8SgR2GH3ob61kCw12VEPhicQEp54urwxxD7dSxF1pbDUFx78om4J6AXYf6a92c8WvSnN9Lj5TGdpF_er2yozrfcQcbqXF5ucRqR5mqZZBtrgonBXW__2hWmYis4kPMkTRUZ4ogAWNXwMlaEU9Z70vUJDSGg2acYdEcNFozMVU9j365OtAKh4jurFpQ5NYpQJpo01cOXFiDhVGF3CCcPfA3M3S2pcLSkcszIniw1cgu6_wA6xlGXLsKuLzztcmdKLXcwVOEBMjYf_Yson8sSWOLoF5skDH8nLPHDVWGVYt8tHOcnqcImeQHVRyQpdxsMhbtixKHNM1TH9dNxygVrOgw9EmyT4-YUr9-m7JZSmqrvVCUurw_Hv4VP9yOkAgX_UTzzGaojDnI1zm9wjD9RW8IiMxi1SHRS1KugT2EueMaFtz6O4-gz8YAwjbAgyfFQokql3GaTPDA5LdORfCyF1q6NTdi5BXCCryt51U5Ysm4n9atT2wkR3moRY8kew6-KHw4RbyUkng78S_sa5FVHkaTRpHBe8RiYXahBoQvpCa-ILFUwzzHV2gPb27Vp6BdaJRUD_fAaIxiXfbw6PvsscQ6bXAw9YUfeEiWFj9SqmcQ-kV9LVNoRFEp---tpGN4AkR98rfa9yVoXuf6uwlnlWcfvoJoCfUiEomK03d9klPzQC7jKKnxw_QZ5LHndxRvSvvZd0nf1qySsTZ_LgRphh7qyZ5NE9takTOHRZw1VjPwXPFf2_k3pUTuewoQUpkSVxWxyT6_jPN5e8pTmjYlXQ3wSabihvAi6of1N6_TBKhUXhAbmW4-sEOjtkVKDB6dcZGgMcerzN8iaaxjS_t9p6yfoxtDufqS9owauQ1AEbHT_tDPWyfRVncYar8B-9SCigLlPUs8O4gD0h9zd-qo8UQhsIoO1UgRflJslL4biK0N3D49KBRu35FNnMeilP1GtCDFcF56jrahj4_LLUj6FeemS44jO24F1kxMH_06rXx9bWS0_IycWtDzfqtxRutHThKDL-i_7TxyQ-nVcrCfgxxd9cnmfWIQDzkJcizryqPDAGEW__OdEvweLTWOJcKPlI__IWtjY_7-33y3hFBoZAmAfQ5DErsZIFV3RrT2HXWw0BQ3yFyC4qxjVfeeOPcKRw_PnfEMuujy2bvQqeCLnsQMmrGjXqSFXIwCdIMPOHo3Jr3vmX3FahHDi1BCRP71wXBTVdpSMFidNiX_tzD_1UqRiIFI3d8r6K3IEQLZtYkZzcAtOW8NhRD0guHZ--dDlO00nrFZErgZgTF4XYsE5kVq9lUtqQFDuPvdFZkIMPlpqWbr7NuymqEUfTTQJqpEP9T1YAoIr1zH2WKOaUfv8xh65asVRM4lQExxN6YPpv1pkYtY-xsUJ3G7V8gaAc1pwrdCodkqAB6YCn8jT-_le2T1kdWl-SyhaTr2M3uu0x4wfCFPUrY5uk_dXI-QvtWrAq5CwPrESMeLVLWVMxz_LLCcaBzeDIHQxtvde5g_W69Lf9cNtL7rEm45q7i2pxkOJ38ghiOsYCsU_dqgG3_fM8yfqyArs5N_DsNi3xKXB8ODGMQYslmmqEhYHhMxyQmxNQQZ_Hq_zjZaoKZrQDxM610ekQEELAD1rpxL1uOkRtyBhs63CwOG7rsWKsSQ-NkWASCVqUZ_mJ1qkyZe3CXGvuuj9SGpnsWoSINAH4ReQMhSl44GcOq4TNe3JqhxWgZ4Jd8WMsB9CGXQHUrbh40dFaW_Lb94Zmb91cU6_NspNyslOeGsUnJ5fXhWDCXylqLizn9sFAFo28hE-AutQwmt_FQCbCDvCMIcvyntGY8MF2jzwV_0103KadWDn1ek3Y2lIlW8uJwgQW1uQL2JxozAPHejsx2cCSoC3E4oE7BqY-05Lbuy9GVsc6pmQy6p4wyyYS4HhVtO9g2CRzRs8OBHEq0GVZMshF2mgrnEnhWu7_JRZUgIRi4gRv7EAXAFuUoGAvYIzBcxhc8-IZOye79IJ0wD91EEMz_YRlToCWhBRAYMYS85EgltmrhDVXXkpnMthdKnzvSldRSwVjWLn_mLUcyckz0tK--ISzXvHEKONZMuWMCB0tm-8lr5BhvKIc1fB5ocXjU-zUxHjRFYuYD4w2HecujMPKFw2cSQJmoGa4VTEjFvH3k16-7V1NyAKzx8vIudrAfZwYlWfAb3x-4CxVVoo_fVKm0XbADR6C75N_wsOJq_ihU1bRl8Su-qWH623AN4JcermnjUCSS394C5YYTNVRbKiSjwugAivFRgxBrcRKOzlq60amO8MRIwpj8PO7U1PfX6vNSTsOzjV4BwENno3n8Ah5R6jjh5lXHNWJU7eLqEClaKVXDc9sWHdtZWxWSuCahueOZ2wt5yZxaa-B8akA4VG3OkXRkVxaB5KOVOEps5cmwEV40DvmGCVWC8xt0FY7QC2CvhcIOATlYC8y3e1H_Xf7JYbSKN7t6aXVplf1NIW_rLCD5A3_Yn7_7Nk-kWjhpXkPp11v6FhE3FX3r53v2JSuY8rOnk8xXRPX-OJhUadMmk8LFSMMp8BnWARtnBmrNmkpu3YGeKTITMBZB_ZS9LhMgIqX04F4dpg9nLZudnZ93hAthM7HZ55QnB2d10qYd72298nu4GvWWhB95Bo0nZGUmx1z2Jx8zF_F1sD1TJ_E3HgDDnbgVcys05UcUQyZ2pXJtJQWUQNMXq8LrBpEgiPGXBecLrHLv87b-3NHX04njmLRKbPDUUSfEBVQx4wyo4ZM99z18kTRUS6n80XUQbqshRHDSqd3n0uvNU2_n-RS8cAuPrLwygpE_hPvyZJYa4AUBzzf2KMI9Wuq_n6cJbMTMFYVAI6rxh-Baya19Cq7yzG64caQk5_o-Dcfog1LAUb-1_qJWQFypgqzoV6Q-QOevvnBY1LEKyxE5EBM_EyGGtx3Fg5A_9CrZfAXmCjsBmZwo0lFcLKT-0vRaJAppkbwkBqg3GsWxHk0a6l1iGzGPBOx3IAQYULicDYDo1NFM-29vqnv9HPVl8hjDIi-MGxr_jm4J2fasVmyLcB-9nqAgd0J3Fm_sa9ZKSGUfCLiRzdKBrc-Hb-XmHCm83dCa1NlIt2jaOxYhrp1IVoRN2lwS2N5XoQMTozS_Vjd54QEG_rrrU74XwS5R29XmimHfQSfg6-tQz1wvPyrZyvUj64Rwux8hxxnI0y7-AqCIuT5Z1d7cKwXHeTyKx8WlWTWwYBZp-95fCOcsCkryDy02kc0VntKixpM9uYt7W5MnlnEw3eVXIJKd9-q0ZRdlHTcRDdGG4Ln8UemSVbQARbDafjuPXYJb4zublpuS8gN0m9VbKLpgFl_8LRRVQsbh4qK8gpCI6JEwzlik6HtOXmfHLYBSIym6oAzeoOSl067ll112EgVEj8XY48Gy_TIquZZmmme3Ja8c6p6z7yJS_uWXHUZcaG014qZMvaEKSzkc6aguNGZceV4mc-8yTTB6osX0publuNI7tOVsWRC2EjBAbDJFcAO_ma0RQ1umq1ofzISEbdMmpQM2Dkxu-BInuAoLEQ47J7A2jNLqad7gRtMjkYATbfBQGUrzHrkI17S0351OSi6EIHIARJayPUGYTnCCXNUc2C_F5e8NCmD1K0SyXSIFwzkYOwVP1NA63nsgw9APfd47x4jJ5D9q1w8OjbwP8WefJA5bg_61agCYATR30bwrPxWjGaCYdgVxfEQi1etdsv3ppUAf88okl7EOZuhcyUvVaAUgUPOzpZNZVW3yVLx7SK-IC70xNbXYQb6GlptFXMTzYxHGVEQzpAlJIzwQh6rrif8n516zDc9GOyLnlws6iRGlTFpKpwQ2zi0xeoik8T8WtQucJNt-vW_q1mB28Nx0r6leWQHMZgldT04nIXbg2KaA_v1sNKINdyyGd8oOdhmmmGDpFuEpXikgKZtFppGpjCdXlboECffpj0NFsa1wFWM0ZbFjvmw5pQGKUyV3Le2N7AxRA_aJE3UXS4G5Q_rjReYOS4HKbqis7E6bh79JhmPwl6KGxUr46Td8pVDEqwzTEpXQMqE6X4kXYu-PdweVqFDWxXGdahx5gOfvrtcoc66YuYOzaMFPoUU3z5KrwOegNK3-_8bc6-eFZlrfD0uY5TbG2ChATJ-D_9bU3R1Sw8IlBl_UiGY46S9M53ySIVwC_A5elIQbq5eLYVUkSZhd9L-8BT-cgKBMsI83-2jz41qptrenXZWX_GO-swhKocLQklAbejwuApaMj3BkfBosY0HYyYcuZunjd0yFyEXROoF_PXJfOUqjIU7zbJas_HmXNT9HPUcMhkPkAXfxdGeFDGT6b8j2BrYhEQ3gCmCCDE003FEDP6SlPxDfEC_l9QU-vE7Cv3eCLiwpDcBp4UCn4aMmntw1RjIbpSov0a5Ja9JpYwCAtpsjfFkzxKEPCfzxlIoCuQ8XKmnAgTDhsRZ8_dICTRYiLuVRcfXDbp0n6znmdJsEV94KYK5_ALFeJe3-BBR5VuAeJyRTdbQu81_mGfMp3_nDwlZADy9WGcu1MsroR-VIJgZdHzbYa3xvSf0dyeBbbUTV2fyOZjZAUI1HDK4fvIboIId01oTZO3DaZc6G-4upFNPQ-dLZByPtdAVC5yklBF4XLZixa5kH8sbyqcDDs6bCxKdZprNjb-IwIZ9xWvTM7b5_bVIT3WHSoBH91OUwxjM5ndjenEMakn7uAxb3cGDgmQhn0v8jU5_zp51tFngRmbmBN_t8BXud05d1U2NN9dnigX9lOnWQ6KEK9i6HcUBub4f5yZy3H_IZAWzIYOwTmR-6v1CZADVQzbN-3fT-XaW9Gr15hvx1LJlz-N3jaudplaL8Cy51VhX5kOQ0LtXbb4IiyqutPq3Q7dt4jsj8zKwEwmAjBUHefQ8ok7ph0TLJfU4Hj0vMvvqkN9El2-m1YSImll-itHSvneQY8a9iDXsgIQ1SrGiEYu94A4wY5rcVozMrOc5NO8HJFzMBhHrRJYMnvj7vlaeAFbzv6vSDiAczwLx6OiW4KP95NVWdig5k3HiIDUlV36BH2SWJZ8atRzXWrMWoWRquFJMyBxeP5RWNCuelRfIC4R0YsEuV_cPsSSypySrE_Z8MhF-yKpStnjdBD5skKwSaD4WM49EdON6tcpX5LUU35rJ3jQoXXphnutxg1z2-2mwwMMoaJeTYmNUpgxyw9SUJSiR13m7SAtDMFiBgWxXFAspqFcso-WlzisXSZWYme5rTOppY1k7wu1uaJ1oHmz--2b-zmbprg4qYWvxVj4HwLZsuLClS44oB5u33icKiM5dF3Ni-2R8j46l0FkGQMuNNSzb3NSJtXcE16Tn4sCky5Xo5duWRm_GsI-5DO4eGiRFntrHS7Uaw35zRLzcsGt64E4IemVVOuh1W2x5LHhXiCdlGBsqrUA03sv8Wfd_GpJD_E7W318msZMOqTNIAqP5dmtIiRJHx2SR5SkD7lMe8Mh_Z-K1zbf29OXLRfE45UMOFzwuLb4IvteRJZRgovHuzxBBi6UwxCOXGssTQQVaL415r_VwTI5dzpKlG5N24owG97EstKgCfKE-11dqBwJTvNoi_LS6r9Arv4xhtXxxCBncXHRWv5OmmE3D4DXJiBuFs0Jz0tu8BzdpDKdHvtw5yBcP5JbK_P25wqnUfFaonuxn6yUCPI76QsonXP7JL_Sx6tdsiLtBozMk1HG-6zCM7sCjqFjtMUz8i3xQNkdJh9kA-NfZSqAeUSOf7NRPUwIjh8x7PfzlGLfc5qqjp-5HKg1qPEg3AIukcTLelrXJGybBo5u7sVeUbocZI3ZsPLFhCNDJlq8AMe73TcvqE2o0TJG8sP9DxjK3HdisCb8ODOV6PmxVFywYKOPAdyP0ZIeC_BenLZcKQSsF7xh3BAKU8llCUYnv8bMtCc2jONqUA4VgKqDrF81c824oRru2vwjtQOJHXRQlTji0ylZAYNo2dgSfCkKR1NaUkxI06-VOpcNSqTM4OeitJ7nrVAFgmlZwQTKnm7S7hytSZcYZ3fcv1KOCegQaGfRrNETa4isMBkTih6SARY_bbI8PM-ZMaC0f5SFOn8p7u-RRYbRTqY_zZMcp_GgwnjD-Vd4qb0cxjQVX3es1e4P-BNa6Fi-kV1Cv8FrqzRYtIk5LLsHxc9FxtyWJRIcL6Jyyxf7Erq0y0RsZgDrq78CABIKESEctYgrrGqCusBOGC_VQUTMiMMV4ei94mefugHJb8VINQaVSN38Vz9_IlmJk5pNnWMMyZrCxXpF2cTZgXiTQ9YvilDejW6XI9932sNcuQ8J0xLC2px41bi5h-EUjfuQ1yytzIdV72KyThClTNX-ZuyDw3qC7xgdYDJ3xW56nLEnj8ikhhawNSrXx2sc2cMN8Gl2FLWAohXFhI5oNgs8CupVDp8X0ihXfVFYRSR40Dpf0b8ly1K3J8H5kW02kAU3gf55YZkXT642zxbRat5zB7C56n2l0NhcyyAVv8oZ-Bfikon6RNLu7C8qOM-6OXqfibrxTlwVPYPJLKGypIX2DNSye1YcL6IWNV3t7QUcbjwksXMw-QakEk1yFXiANZjx8SxGxppQ8A62VozfFLFJkmjlB8gplA0EZJbMmdl2INm5DCM1MI-QgEC8xZgMvETpmP2UdGl7shvA4NWyH-9BIm4a91iOTafEHHnGuCZK8bvEC5mbOcAQdUwdtZY0WUtgc4JmlGuADO-EeWLkXaG_Iy5NbdnSbbWp4CqOiWj7FeZXXuY1O1P2q1xyncIVMpDg6Sc0eDE8zH-OUgWKSpxnN69VQJc0Rp0kKPBkh8XLMVqNdziCPYjMty03nixaAC6IaIQz4Vw4-R8lEaDDXrckbEFWTh-DHpJECyT598NjSGcLg0DuHY_j3-NNQBkEdlJ8y2lnhf1OB5wozXySHl7E67II1xpLO23ys2zkUb5juIIl1HF5TVHFWRwydGYl3yDfOj5oxSeHoA_2uedXvVx2oO1vQMqiFLfu5qwbkgWE1J7U1x0fqybyxxz2U7QWyeOz3Cy88u7VRTBwqiN8Ou5W_5tMutqZHEqWxh8_XIYX9DBxH7qhKNOKgk-2svXpBw2EDLTbcOTCwx-QrrWu4lffc4Vk9wXA1Y1brJEAhgc78k6-cSt_YkEEY7Ie4cQUPojxJgw49Kx6WeXTPNe6UtTlkIMtLHYbvwzSMOe10c0oAnW3TRiCICApP4zeAe_ZkMXbj3b_ipGO0OBCJSeZChxfE4Qof_QkrKZiR8jy1ZsRVu010DLSsI0hWP-3MWQY7GnavAE93rxTcvv_S55czZJYdog_VkaydNBppyaRg3dfrwDXMAopsRBImGjsmsmrpnxLr7T9ZXKrxwYQaWjjWGVQouuxDeyujnlfOR-J_v_8F6OHv1QXKalekq66j30PO6t5Ii1cLOIqZut34NIP60oFX8JIh2dZ2mkugvb2ayWGKUzHtVsgtMpL0GS6iizcNHveMmzsHmq2NmCrK692-iScOMdVHJshJc29FMW7zC_-kUVIO1TFaEI2M0DOKkM7dTfnM3TC7aAoU88W08KSerMaRvoWqa2IDV582OEa6QJ2f5KOMFt4a5LjzAzIVmkfU_61ZSc8qDvaerGJhyJ6D3bawnb-5rFjIB8Z24j3wGi9jWJ0ZEhVdZhNFBonNI04MycLJb28k6pQWa1VvacCbv-MBpDFFcAlZq0XYIxRNbrNWb69KH-sDpQSZ0gN4IrfUfxHtI46ktgmvYw7W0Sf_heyvvom-z-ytYVJ2tzI6kRBSnwXqMxVthvdHuvhxvx5ZczSilQPq99Uc5A799-jW7jG-sOB9GC2fphLktY9v54pN5VwYAYu6YxxdLk9MKzbDK4XnudhxegO-6nELwhX5CKWpHB8qTKPAaHqZyJ7-STWROw5CUMRyekmHVtFjmmCEecKfknA1phjKexfo_rcDJKW9BkHaPffGbzj2bPmup_QtqR2x_qckREfNTQCcpkZDjNakHqj91WMsnMplQ8TamImOkCp_08MT-s69xOQAM044vpShbgQh97KEzBXL9K7CRsLYCp5t6N7WHcU2ehYDmNdT5ry6dOPCIbnzToJlVpHBfCSUA5oZRpCK54FuhxqCAtpdHSrAUdE_NLzAutkFkUsyGfFtS-cUJXk5OfOkbTRTEDGC55AUKEwbs7UbxD2IWzlOEP2gCTnOta4ihwwfCCT3WjZBBnlg_pzdRnSqtzTzcEG3aq4Dw-9uD0o8rlUDNlmMLtz6EttcQhTSENuush0vR9Dtkl1Rjc5BFS28h--P18iSh6Ij6DoGWmZOtLAdClF3o1M3PmJN_iDEcvrNQlnDyu80TOYUNBqIi6Wyzz6RsSSHD1QzebNm7r4nqtBkuoaG2M0XfWqw7wwvnlSk4LtYrMmvUiWFHFxHQwk8U_4_B42AdYQBUpjHjPs3-2iaAWItBmb9cXbs7EPZ2KtnPvLupPpq9dA9Xm7hhWNmBO5_Lr-wxZqdw3qbVCbtuVtSdh6gpd1_5jYiu4o1PG7CKhIdtbQ0Yl-9p4MFSZw3qNF57YqVp2zXgn18Dy1jYhVXoWRDY9RCoPPP8ycwye4vM7dUMN0oqswaTpabhzNpUKh63baRi6rPbkKt6_WRHQE_-ljTYUs3ie0VLssasCECZ_h3eaE9bZSf3-entOAiiDWSqaASvxqzSCm7a44uJ3n018mz0S0snwTTc-Q_mN-J607ku4KY7p23SgMVzawmuRFCVpSlD601Cd60euxF0-2Zk_2Pzm4jFhsj8yQYeXMm4pW-gwnl6lBjlrssHpvRnyt8bBPojmvX7B7kQDQ4_1qYIjh7KeWZ2Q0pXkb21w122kPnwIlLiMdo4_7W8Sok7OXSq9nydf30JvcORnmTbrJt-iFhjCYEooUwAu027igjCv9jCsLbsYLvUJixCUWGrJFnqQb0XlP677phnLAahgDKIULKQkwbHz9ppu2GO6bKpIJmPcfcAtNULMvA4kJC21wuP88Czssz4HthuZ_aRzbQiy9ZAkZkjwSggfORyzraAbp4-R4am4YTH7k_ObUX4EwkvXbOEB4AEHJ2BZIkU9orltPSLtGehqn_-CyoVidx-_XXrVRYzRtHOFGvi6wF6U5CmbAk7GzIPU-A0vv2Ui-MMhdEpHj9wLr3fNqCBK20rnERHXFP1CqjwvGWLxbtGb6vn_sesv8dMMwMYINVhSKAztJ3VqCwby0Wr2U-F1B6JtUB9xP7RlfgZMtgoxR3bJhuiDCWGE3S5q2Z9lNN3peG9AOklbuYabTjB9nhncEkB4zsMTSKorSFx8zEegTsdPduckWtJvUMI49_RcwpC2tK_HpbYACpJ7jdb6R18u-1Ea_olEivyhwtFVO3HVOQZQt1XUiIdZyI8AzOWD5TATTo-efpKPwk7BPaoEbYafXkPWzCWV8JafEs4CyIQm_dHRmv2PQgpT0ZUqIzpXM4mJ0bd1PhVzIKfWeVejfDsCI6ZWepr197yUn4SOndJo1YTA8_u05SngsLJ0GKxd9saUG89BOS3ONHr0JVQduEiE_ki8aXL99NW6zDqoGXHIDed2-Uu_vp02XfUlQXM7xB4nOoLMipU5fksLMbNBYdNi3Jh1zORjAq5RJliu-p9Kqm2KBQzBjwFstezmXkoRR7wkRU2XKqfxDqT0_QnSU1XfplbP56B7YXaF9_n43b7bGtSzm09LpALs6GdY8m4PEYsegnV1Tlj5HQztzfpxgN3MCoRuNpAZ_E4rn2qa2vH1_EUkfnqkRGuMffUn2KXPlHGrl3ejRSn6alIUVN8jcM_UE_3YLivX-Y1Mul_S8GkkWbYYeH4_83Un7ycRk9FstXXRjbE4OqeyWLbYVqSODwZ0rRbpIRTPBIxhuCk1GXchDnfc5LMd-RnmZ4g1rlgb1Ccqjnb5ynpObvzK7aVWnCLhX9DXIeW-tU6VjrJJYMHMnDG1EaPyVdF3opFLg01lVNDRtNmBJy23_WeqYmZDw_TgfCKFzalrMuGc7ugjdZjBVX6TlC8_bgU3_Z35wlktcGChGsuxhHpaBVkxU8jxESXRTCWHtUYJH5XjBc7EJwigfXGBA4aZevtV8iY_7ATLhF44PRGlEOjOpFfmYJ0zM_FQUxvclJMTIjeOukJG1O_9KBa7-a9jOxykhrdooAmEbkLaevsGL0Y5zkpLdrQ23mnQmC-ncqRTSpGpBorFdL6e-CGahPIJPucEbLbszIbso-Ph5JCPCPJLVjaiF8pbVdaKVU9fDPX9fA5c8i6r1K5I-i2uxFS6svEW0jC_dhjPYUTu86KugO7jxphQ9ASAUerl-4iqTIhIFkr86At_dCaBuL24YsM59OFN-mqB9dJmL9bFHvpTeB-BYHQ8Y3X0XFO7PvMPzT33x1viiLaGcm-HcEbjxnYWrOZzH6Qp-6apQJM_KY5dHD6KuVPGh99nOHh7cQXC2ILp7L_AyZ_PwU2RP5pu_6zQrrBEVp3ospg3ii15BI9h_MBZrlVmT_q3IassSMHwrMoZYJCPMtpfrkBZLvV_PwQFj0t7j0IPvKgT7SY0e_5wU251tiGqNeSZlrGEFfXgJpKMZAWY-rsdnxOpulo7CjXHaWswRUqLcRD7NIdekuiyw9vB8PpJkdbdUDsxpbhW2Y5UYf3tVLQ8V4DNSM6IneUDwYTvjpH7KoZf9JkG278R7-ZHFBkkDkUtbX8DPxskgZPkJVo27TwDdao5g_3bZl9cG_gmfRSnFNDOcYmpRzpPRnrNLtsShG5_t8e5xmXWkhd-8lzAMOw0c9kInMy3siaR8XY4h6cxaAi0C4rGxazdXkq0w4cd0X3gU09oMFYsv3Dx4yueSlCMhOEpgmIRliruK4A0XTV6hUmEOeqLpFgS9bXZstOVwQI9Ac7ydCghIi8NeEQDpY2wtLlTP5dcsuaAMFWB46csHVPpLfAuJRFjV48jNJkbsSPhgQMDYnyT1n3jN7deQS-be1QCy84yq9YSZHGIfW1KBPOQoGf-nrfcwhw9COzxbqK9HnmdI2vHZ5D_P4hvrK7gDv6kpKhJmtvUOk9AdDzULIk61gsVz9cuwoTKZIUvkJ2WtH98gxlKlpe9-OzsyFGQUlERmnkPkdk2ZrqqGFazZCTHy-Do5Hx5BeVRbjJMsHMYS8oggTR4ZNpUnXKsplK4-XNG10QZjD3kBt4A1ZjKoAvAcSzrjtu8sqhQ49BWFzHXPzmf_qA_5KNY7zCTzBKZAWj2nE55l568qqjFYbSIAuQ5Yuf4QVX751fzsEaP9OJ4LeOs9OJtD5QAfkIQU6x1X8v8P18EHIb37V6ZVpuePJTQk4UODRa_YvlZbG1RJQb54EgrNT3ffYtn9ciFBAXjRLNXRbtVdE7CM3ikMgiuyogMqA9sy3FsAZ_NSsNwwNiOLNTUkeFs2xSMnmmyJThqWwBEnOq7KZQayVcYHPSQhVzFUpLbq1nU3JGzJV5aiMfSRPEddE5qJo43jv2bxlk18QXFSiyZtR95cglVrHpMl0MRd3cpVSSQWOGJ3uVVSZsoUuajH-wPYCQGXnjQE4vGEuTbt3PntRMc2PjFNutEtHb9CycUhunTjSIybnfhVivu_xj3DdUZjvqopjOLD24MND3qzduE_iD35rctKdk7aDhMabqhcHuuu5u3W0dO80P-PvBi0d932dB7HXywh9yuksXrhDEWGw5wSGouyAXWTshkQzVJJkGKppD5vgzvk9mJgbJ-J_LA-nlcnLdkHlr03W6QHYecq5WypZLMwyCbLEExyg81_SaGSsT9I1LQuBwSuA1Yf6JvnAaQvJ6sJfjtCSlrveOXCv6QudXRIhY_LQvUL4JDIq9rmZdkIYh5nZToJnqdJPbt3aHucaGMVMRqecayFfhFpcXi7OhnQUDcDlJ701ViJbXQmFi4xHt5-4Egn75RBYBEQF7ZipbdvJ6Strh4scrFasJ4RKyRkyBlvf0xzqJdUrFaygdEcJhYPx7dtr9aqhooM_LoqwExlBBCADrvjqsFG_zsAcGezHollH9zDZXO_VMAw5NgNuAMBgPyFjoDZETfh4pyfS4gtakSevtOKpobXlYoXCLIPIaay_VOiS8YxJ1uI3devKnPB_Y6_Z1GGWWP0AgHegdiHTtLuDPrNrpxKXeUgRW-UHkMOqL9VlIAjSbiA2emDi7Wo6f1oHcuKL2UgjVOMWGVqtBtAUjnIOXwbL8wDXhkHR9WZY_UTZc_VI48koTkat1o1WDF1NgqdiknwFDBROT82QrEhTmMyyhtp56-MiDHa4bZhNMfzoKcj_X78zx94zKL-9szdGiMb82Vt-DIpUJm0A3jgwiKQ7SvZ4XfFOPa4WrBg9DK5AE0ilu9F83f8CqltCEWi8Z7mDwXBQSs6zs64oTLDupoa-iJ1vzGreUPQJFpDWj3vnkVtR8mmWm4mSDroN12cAaUDhS6Ft3K0An1v7BgsHAoGgfrTbULR9ucnyDTry5jAb590l0aoACLffeR0OzuXv5-_xOLF1AvxMnjNFpltdK2RvXg3JA_SdAFt8mNCDNXQWYHVJ7xo4NHhYdeGsb1-K3T6SFH9w9QkU53mGb_PraY8DWWnplUCBE97qPUFqDYkOfR-p3pi6RjmumsLQjBlZ2o_x0DB8UDe-YkSr8QaMQuwPoqif0V7EK20Voh4lYGx4Xw1th4l3JZxY7a_5oq-xg8Iz7bR9eIxcAPUtgftpHnzDxmPc4OAt_z9CefzHkkGjWOD8Uwk6bo70MMiGLExnMAUzlukw5do5rXRuco9GfJHIVYMEkM-KLSQRQm-JxUYZMbpk_AlRX3Qj1Ce6tYMV7RTMVFOS5EeV1cW_UGERClI1LWH35PpM4jCnt5SnfiCJmcSO_3u9vpWS_VRpwUlmkg6ynJB8kY_p2yCrEk--PY7gwzkSlHbDu8="
+        },
+        {
+          "id": "msg_05e2e7a9352e81aa006a6804f407308190b55b07b65c892944",
+          "content": [
+            {
+              "annotations": [],
+              "text": "Writing the complete implementation plan to `/plan.md` now.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cat > /plan.md <<'PLAN_EOF'\\n## Root cause\\n`MatrixExpr` printing uses matrix-specific add printers that do not normalize negative terms before joining with `+`.\\n\\nSpecifically:\\n- `sympy/printing/str.py::_print_MatAdd`\\n- `sympy/printing/pretty/pretty.py::_print_MatAdd`\\n- `sympy/printing/latex.py::_print_MatAdd`\\n\\nThese implementations currently concatenate terms with a literal `+` separator (or `_print_seq(..., ' + ')`) and never convert terms like `MatMul(-1, X)` into `-X` at the add level. As a result, subtraction in matrix expressions prints as `(+ (-1)*...)` / `+ -...` / `-1 ...` instead of `- ...`.\\n\\n## Changes\\n- `sympy/printing/str.py` :: `StrPrinter._print_MatAdd` \u2014 replace simple `' + '.join(...)` logic with sign-aware term assembly (mirroring `_print_Add` behavior, but based on expression sign, not string prefix):\\n  - iterate terms in `expr.args` (preserve current MatAdd ordering behavior),\\n  - for each term, if `term.could_extract_minus_sign()` then set sign `-` and print `-term`; else sign `+` and print `term`,\\n  - apply parentheses when `precedence(term) < precedence(expr)`,\\n  - emit first sign only if it is `-`, otherwise omit leading `+`.\\n\\n- `sympy/printing/pretty/pretty.py` :: `PrettyPrinter._print_MatAdd` \u2014 replace `_print_seq(..., ' + ')` with sign-aware pretty-form construction:\\n  - reuse the same minus detection via `term.could_extract_minus_sign()`,\\n  - print magnitude as `self._print(-term)` for negative terms,\\n  - prepend minus using the same `pretty_negative` style used in `_print_Add` so output is `a - b` (not `a + -b`),\\n  - keep existing parenthesization behavior for nested additive forms.\\n\\n- `sympy/printing/latex.py` :: `LatexPrinter._print_MatAdd` \u2014 replace literal plus-join with sign-aware concatenation:\\n  - detect negative terms using `could_extract_minus_sign()`,\\n  - print `-term` for magnitude and emit `\\\" - \\\"` separators/signs,\\n  - emit `\\\" + \\\"` only for nonnegative non-leading terms,\\n  - keep existing parenthesis rules for precedence where applicable.\\n\\n- `sympy/printing/tests/test_str.py` :: add regression test for matrix subtraction printing, e.g.:\\n  - construct `A = MatrixSymbol('A', 2, 2)`, `B = MatrixSymbol('B', 2, 2)`, `expr = A - A*B - B`,\\n  - assert string form uses subtraction style (expected canonical order: `-B - A*B + A`) and does not contain `(-1)*` or `+ -`.\\n\\n- `sympy/printing/pretty/tests/test_pretty.py` :: add regression test for pretty printing of same `expr`:\\n  - assert output is subtraction-form (unicode canonical: `-B - A\u22c5B + A`; ascii equivalent in non-unicode path),\\n  - explicitly guard against `+ -` form.\\n\\n- `sympy/printing/tests/test_latex.py` :: add regression test for same `expr`:\\n  - assert latex uses subtraction-form (canonical order consistent with printer ordering, e.g. `- B - A B + A`),\\n  - guard against explicit `-1` coefficient rendering for these additive negative terms.\\n\\n## Verification\\n1. Run targeted printer tests:\\n   - `python -m pytest sympy/printing/tests/test_str.py -k MatAdd`\\n   - `python -m pytest sympy/printing/pretty/tests/test_pretty.py -k MatAdd`\\n   - `python -m pytest sympy/printing/tests/test_latex.py -k MatAdd`\\n2. Run the reproducer from the issue and confirm:\\n   - `str(A - A*B - B)` prints with `-` terms (no `(-1)*`),\\n   - `pprint(...)` prints with subtraction (no `+ -`),\\n   - `latex(...)` prints subtraction (no `-1` coefficients for additive negatives).\\n3. Sanity-check that existing scalar `Add` formatting tests still pass (no behavior change outside matrix-add code paths).\\nPLAN_EOF\"}",
+          "call_id": "call_8FFz5eGy0F4fL8Xkp46K4Rd1",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_05e2e7a9352e81aa006a6804f43ca8819085ba8f051b25a38d",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 7277,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 5632,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 5290,
+        "output_tokens_details": {
+          "reasoning_tokens": 4243,
+          "text_tokens": null
+        },
+        "total_tokens": 12567,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785201917,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cat > /plan.md <<'PLAN_EOF'\n## Root cause\n`MatrixExpr` printing uses matrix-specific add printers that do not normalize negative terms before joining with `+`.\n\nSpecifically:\n- `sympy/printing/str.py::_print_MatAdd`\n- `sympy/printing/pretty/pretty.py::_print_MatAdd`\n- `sympy/printing/latex.py::_print_MatAdd`\n\nThese implementations currently concatenate terms with a literal `+` separator (or `_print_seq(..., ' + ')`) and never convert terms like `MatMul(-1, X)` into `-X` at the add level. As a result, subtraction in matrix expressions prints as `(+ (-1)*...)` / `+ -...` / `-1 ...` instead of `- ...`.\n\n## Changes\n- `sympy/printing/str.py` :: `StrPrinter._print_MatAdd` \u2014 replace simple `' + '.join(...)` logic with sign-aware term assembly (mirroring `_print_Add` behavior, but based on expression sign, not string prefix):\n  - iterate terms in `expr.args` (preserve current MatAdd ordering behavior),\n  - for each term, if `term.could_extract_minus_sign()` then set sign `-` and print `-term`; else sign `+` and print `term`,\n  - apply parentheses when `precedence(term) < precedence(expr)`,\n  - emit first sign only if it is `-`, otherwise omit leading `+`.\n\n- `sympy/printing/pretty/pretty.py` :: `PrettyPrinter._print_MatAdd` \u2014 replace `_print_seq(..., ' + ')` with sign-aware pretty-form construction:\n  - reuse the same minus detection via `term.could_extract_minus_sign()`,\n  - print magnitude as `self._print(-term)` for negative terms,\n  - prepend minus using the same `pretty_negative` style used in `_print_Add` so output is `a - b` (not `a + -b`),\n  - keep existing parenthesization behavior for nested additive forms.\n\n- `sympy/printing/latex.py` :: `LatexPrinter._print_MatAdd` \u2014 replace literal plus-join with sign-aware concatenation:\n  - detect negative terms using `could_extract_minus_sign()`,\n  - print `-term` for magnitude and emit `\" - \"` separators/signs,\n  - emit `\" + \"` only for nonnegative non-leading terms,\n  - keep existing parenthesis rules for precedence where applicable.\n\n- `sympy/printing/tests/test_str.py` :: add regression test for matrix subtraction printing, e.g.:\n  - construct `A = MatrixSymbol('A', 2, 2)`, `B = MatrixSymbol('B', 2, 2)`, `expr = A - A*B - B`,\n  - assert string form uses subtraction style (expected canonical order: `-B - A*B + A`) and does not contain `(-1)*` or `+ -`.\n\n- `sympy/printing/pretty/tests/test_pretty.py` :: add regression test for pretty printing of same `expr`:\n  - assert output is subtraction-form (unicode canonical: `-B - A\u22c5B + A`; ascii equivalent in non-unicode path),\n  - explicitly guard against `+ -` form.\n\n- `sympy/printing/tests/test_latex.py` :: add regression test for same `expr`:\n  - assert latex uses subtraction-form (canonical order consistent with printer ordering, e.g. `- B - A B + A`),\n  - guard against explicit `-1` coefficient rendering for these additive negative terms.\n\n## Verification\n1. Run targeted printer tests:\n   - `python -m pytest sympy/printing/tests/test_str.py -k MatAdd`\n   - `python -m pytest sympy/printing/pretty/tests/test_pretty.py -k MatAdd`\n   - `python -m pytest sympy/printing/tests/test_latex.py -k MatAdd`\n2. Run the reproducer from the issue and confirm:\n   - `str(A - A*B - B)` prints with `-` terms (no `(-1)*`),\n   - `pprint(...)` prints with subtraction (no `+ -`),\n   - `latex(...)` prints subtraction (no `-1` coefficients for additive negatives).\n3. Sanity-check that existing scalar `Add` formatting tests still pass (no behavior change outside matrix-add code paths).\nPLAN_EOF",
+            "tool_call_id": "call_8FFz5eGy0F4fL8Xkp46K4Rd1"
+          }
+        ],
+        "cost": 0.07792435,
+        "timestamp": 1785201917.3046403
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "",
+        "returncode": 0,
+        "timestamp": 1785201917.433056,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_8FFz5eGy0F4fL8Xkp46K4Rd1",
+      "output": "<returncode>0</returncode>\n<output>\n</output>"
+    },
+    {
+      "role": "exit",
+      "content": "PlanComplete",
+      "extra": {
+        "exit_status": "PlanComplete",
+        "submission": "## Root cause\n`MatrixExpr` printing uses matrix-specific add printers that do not normalize negative terms before joining with `+`.\n\nSpecifically:\n- `sympy/printing/str.py::_print_MatAdd`\n- `sympy/printing/pretty/pretty.py::_print_MatAdd`\n- `sympy/printing/latex.py::_print_MatAdd`\n\nThese implementations currently concatenate terms with a literal `+` separator (or `_print_seq(..., ' + ')`) and never convert terms like `MatMul(-1, X)` into `-X` at the add level. As a result, subtraction in matrix expressions prints as `(+ (-1)*...)` / `+ -...` / `-1 ...` instead of `- ...`.\n\n## Changes\n- `sympy/printing/str.py` :: `StrPrinter._print_MatAdd` \u2014 replace simple `' + '.join(...)` logic with sign-aware term assembly (mirroring `_print_Add` behavior, but based on expression sign, not string prefix):\n  - iterate terms in `expr.args` (preserve current MatAdd ordering behavior),\n  - for each term, if `term.could_extract_minus_sign()` then set sign `-` and print `-term`; else sign `+` and print `term`,\n  - apply parentheses when `precedence(term) < precedence(expr)`,\n  - emit first sign only if it is `-`, otherwise omit leading `+`.\n\n- `sympy/printing/pretty/pretty.py` :: `PrettyPrinter._print_MatAdd` \u2014 replace `_print_seq(..., ' + ')` with sign-aware pretty-form construction:\n  - reuse the same minus detection via `term.could_extract_minus_sign()`,\n  - print magnitude as `self._print(-term)` for negative terms,\n  - prepend minus using the same `pretty_negative` style used in `_print_Add` so output is `a - b` (not `a + -b`),\n  - keep existing parenthesization behavior for nested additive forms.\n\n- `sympy/printing/latex.py` :: `LatexPrinter._print_MatAdd` \u2014 replace literal plus-join with sign-aware concatenation:\n  - detect negative terms using `could_extract_minus_sign()`,\n  - print `-term` for magnitude and emit `\" - \"` separators/signs,\n  - emit `\" + \"` only for nonnegative non-leading terms,\n  - keep existing parenthesis rules for precedence where applicable.\n\n- `sympy/printing/tests/test_str.py` :: add regression test for matrix subtraction printing, e.g.:\n  - construct `A = MatrixSymbol('A', 2, 2)`, `B = MatrixSymbol('B', 2, 2)`, `expr = A - A*B - B`,\n  - assert string form uses subtraction style (expected canonical order: `-B - A*B + A`) and does not contain `(-1)*` or `+ -`.\n\n- `sympy/printing/pretty/tests/test_pretty.py` :: add regression test for pretty printing of same `expr`:\n  - assert output is subtraction-form (unicode canonical: `-B - A\u22c5B + A`; ascii equivalent in non-unicode path),\n  - explicitly guard against `+ -` form.\n\n- `sympy/printing/tests/test_latex.py` :: add regression test for same `expr`:\n  - assert latex uses subtraction-form (canonical order consistent with printer ordering, e.g. `- B - A B + A`),\n  - guard against explicit `-1` coefficient rendering for these additive negative terms.\n\n## Verification\n1. Run targeted printer tests:\n   - `python -m pytest sympy/printing/tests/test_str.py -k MatAdd`\n   - `python -m pytest sympy/printing/pretty/tests/test_pretty.py -k MatAdd`\n   - `python -m pytest sympy/printing/tests/test_latex.py -k MatAdd`\n2. Run the reproducer from the issue and confirm:\n   - `str(A - A*B - B)` prints with `-` terms (no `(-1)*`),\n   - `pprint(...)` prints with subtraction (no `+ -`),\n   - `latex(...)` prints subtraction (no `-1` coefficients for additive negatives).\n3. Sanity-check that existing scalar `Add` formatting tests still pass (no behavior change outside matrix-add code paths)."
+      }
+    }
+  ],
+  "trajectory_format": "mini-swe-agent-1.1"
+}

@@ -1,0 +1,1435 @@
+{
+  "info": {
+    "model_stats": {
+      "instance_cost": 0.0679343,
+      "api_calls": 9
+    },
+    "config": {
+      "agent": {
+        "system_template": "You are a helpful assistant that can interact with a computer shell to solve programming tasks.\n",
+        "instance_template": "You are a senior engineer acting as a PLANNER. Investigate the repository (working dir /testbed) enough to fully understand the issue below and design a precise fix. Take as many or as few steps as the problem genuinely needs \u2014 a one-line bug may need only 2-3 steps to locate; a cross-file change needs more. Use read-only shell commands (cat, sed -n, grep, find, ls, git log/show, python for read-only reproduction).\n\nSTRICT RULES:\n- DO NOT modify any repository file. You are planning only, not fixing.\n- Each response: a short THOUGHT plus AT LEAST ONE bash tool call.\n- When (and ONLY when) you fully understand the root cause and the exact fix, write your final plan to /plan.md and then stop. Use exactly this heredoc form as your final command:\n    cat > /plan.md <<'PLAN_EOF'\n    ## Root cause\n    <what is wrong and precisely where>\n    ## Changes\n    - <file path> :: <function/location> \u2014 <the precise change to make>\n    - ...\n    ## Verification\n    <how to confirm the fix works>\n    PLAN_EOF\n- The plan MUST name specific files, functions, and concrete edits \u2014 specific enough that another engineer implements it WITHOUT re-investigating from scratch.\n\n<issue>\n{{task}}\n</issue>",
+        "step_limit": 20,
+        "cost_limit": 5.0,
+        "wall_time_limit_seconds": 1800,
+        "max_consecutive_format_errors": 3,
+        "output_path": "/home/aman/cascadelm/cascadelm/benchmarks/cascade_runs/pe60/traj/astropy__astropy-8707.plan.traj.json"
+      },
+      "agent_type": "__main__.PlannerAgent",
+      "model": {
+        "model_name": "gpt-5.3-codex",
+        "model_kwargs": {
+          "drop_params": true,
+          "parallel_tool_calls": true,
+          "reasoning_effort": "high"
+        },
+        "litellm_model_registry": null,
+        "set_cache_control": null,
+        "cost_tracking": "default",
+        "format_error_template": "{% if finish_reason is defined and (finish_reason == \"length\" or (finish_reason == \"tool_calls\" and not has_tool_calls)) -%}\nYour previous response reached the output token limit (finish_reason={{ finish_reason }}) before you produced a tool call, so it was cut off. Respond more concisely and finish with exactly one bash tool call. If you need to think more, do so briefly.\n{%- else -%}\nTool call error:\n\n<error>\n{{error}}\n</error>\n\nHere is general guidance on how to submit correct toolcalls:\n\nEvery response needs to use the 'bash' tool at least once to execute commands.\n\nCall the bash tool with your command as the argument:\n- Tool: bash\n- Arguments: {\"command\": \"your_command_here\"}\n\nIf you have completed your assignment, please consult the first message about how to\nsubmit your solution (you will not be able to continue working on this task after that).\n{%- endif %}\n",
+        "observation_template": "{% if output.exception_info -%}\n<exception>{{output.exception_info}}</exception>\n{% endif -%}\n<returncode>{{output.returncode}}</returncode>\n{% if output.output | length < 10000 -%}\n<output>\n{{ output.output -}}\n</output>\n{%- else -%}\n<warning>\nThe output of your last command was too long.\nPlease try a different command that produces less output.\nIf you're looking at a file you can try use head, tail or sed to view a smaller number of lines selectively.\nIf you're using grep or find and it produced too much output, you can use a more selective search pattern.\nIf you really need to see something from the full command's output, you can redirect output to a file and then search in that file.\n</warning>\n{%- set elided_chars = output.output | length - 10000 -%}\n<output_head>\n{{ output.output[:5000] }}\n</output_head>\n<elided_chars>\n{{ elided_chars }} characters elided\n</elided_chars>\n<output_tail>\n{{ output.output[-5000:] }}\n</output_tail>\n{%- endif -%}\n",
+        "multimodal_regex": ""
+      },
+      "model_type": "minisweagent.models.litellm_response_model.LitellmResponseModel",
+      "environment": {
+        "image": "docker.io/swebench/sweb.eval.x86_64.astropy_1776_astropy-8707:latest",
+        "cwd": "/testbed",
+        "env": {
+          "PAGER": "cat",
+          "MANPAGER": "cat",
+          "LESS": "-R",
+          "PIP_PROGRESS_BAR": "off",
+          "TQDM_DISABLE": "1",
+          "BASH_ENV": "/root/.bashrc"
+        },
+        "forward_env": [],
+        "timeout": 60,
+        "executable": "docker",
+        "run_args": [
+          "--rm"
+        ],
+        "container_timeout": "2h",
+        "pull_timeout": 120,
+        "interpreter": [
+          "bash",
+          "-c"
+        ]
+      },
+      "environment_type": "minisweagent.environments.docker.DockerEnvironment"
+    },
+    "mini_version": "2.4.6",
+    "exit_status": "PlanComplete",
+    "submission": "## Root cause\n`Header.fromstring` (`astropy/io/fits/header.py`) and `Card.fromstring` (`astropy/io/fits/card.py`) are implemented as if their inputs are always text `str`. On Python 3, passing `bytes` fails because these methods perform text-only operations (e.g., `'' .join(...)`, comparisons to `'CONTINUE'`/`'END'`, and `' ' * n` padding in `_pad`) against byte slices. This contradicts the documented \u201cbyte string\u201d wording and is inconsistent with `Header.fromfile`, which already accepts binary input by decoding ASCII before parsing.\n\n## Changes\n- `astropy/io/fits/header.py` :: `Header.fromstring`\n  - Add explicit input normalization at the top of the method:\n    - If `data` is bytes-like (`bytes` at minimum; optionally also `bytearray`/`memoryview`), decode with existing FITS ASCII helper (`decode_ascii`) before any parsing.\n    - If `sep` is bytes-like, decode it similarly so `data`/`sep` are the same text type during parsing.\n    - For unsupported input types, raise a clear `TypeError` (rather than letting downstream string ops fail opaquely).\n  - Keep existing parsing logic unchanged after normalization (card splitting, CONTINUE handling, END detection).\n  - Update docstring parameter types to state `str or bytes` for `data` (and `sep` if bytes separators are supported by normalization).\n\n- `astropy/io/fits/card.py` :: `Card.fromstring`\n  - Normalize `image` input before `_pad(image)`:\n    - If `image` is bytes-like, decode via `decode_ascii`.\n    - If not text/bytes-like, raise `TypeError`.\n  - This ensures `_pad` always receives text and avoids `bytes + ' '` errors.\n  - Update docstring to state raw card image may be `str or bytes`.\n\n- `astropy/io/fits/tests/test_header.py` :: add targeted regression tests for `Header.fromstring`\n  - Add a test that builds a valid header string (via `Header.tostring(...)`), encodes to ASCII bytes, and verifies `Header.fromstring(bytes_data, sep=...)` returns an equivalent header.\n  - Add coverage for both default `sep=''` (raw FITS card stream) and newline-separated input (`sep='\\n'`, bytes/newline bytes path), matching current supported modes.\n\n- `astropy/io/fits/tests/test_card.py` :: add targeted regression test for `Card.fromstring`\n  - Add a test that passes an ASCII-encoded 80-char card image to `Card.fromstring` and verifies keyword/value/comment parse equivalence with text input.\n\n## Verification\n1. Run FITS header/card tests focused on new behavior:\n   - `pytest astropy/io/fits/tests/test_header.py -k fromstring`\n   - `pytest astropy/io/fits/tests/test_card.py -k fromstring`\n2. Run the full FITS test subset for regression safety:\n   - `pytest astropy/io/fits/tests`\n3. Confirm behavior manually in a REPL-style check:\n   - `Header.fromstring(header_text.encode('ascii'))` works and equals `Header.fromstring(header_text)`.\n   - `Card.fromstring(card_text.encode('ascii'))` works and parses identically to text input."
+  },
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful assistant that can interact with a computer shell to solve programming tasks."
+    },
+    {
+      "role": "user",
+      "content": "You are a senior engineer acting as a PLANNER. Investigate the repository (working dir /testbed) enough to fully understand the issue below and design a precise fix. Take as many or as few steps as the problem genuinely needs \u2014 a one-line bug may need only 2-3 steps to locate; a cross-file change needs more. Use read-only shell commands (cat, sed -n, grep, find, ls, git log/show, python for read-only reproduction).\n\nSTRICT RULES:\n- DO NOT modify any repository file. You are planning only, not fixing.\n- Each response: a short THOUGHT plus AT LEAST ONE bash tool call.\n- When (and ONLY when) you fully understand the root cause and the exact fix, write your final plan to /plan.md and then stop. Use exactly this heredoc form as your final command:\n    cat > /plan.md <<'PLAN_EOF'\n    ## Root cause\n    <what is wrong and precisely where>\n    ## Changes\n    - <file path> :: <function/location> \u2014 <the precise change to make>\n    - ...\n    ## Verification\n    <how to confirm the fix works>\n    PLAN_EOF\n- The plan MUST name specific files, functions, and concrete edits \u2014 specific enough that another engineer implements it WITHOUT re-investigating from scratch.\n\n<issue>\nHeader.fromstring does not accept Python 3 bytes\nAccording to [the docs](http://docs.astropy.org/en/stable/_modules/astropy/io/fits/header.html#Header.fromstring), the method `Header.fromstring` \"...creates an HDU header from a byte string containing the entire header data.\"\r\n\r\nBy \"byte string\" here it really means the `str` type which on Python 2 could be raw binary data, but on Python 3 explicitly is not.   In fact it does work on Python 3's unicode `str`s, but here it assumes that the data can be ASCII-encoded.\r\n\r\nIts counterpart, `Header.fromfile` will work with files opened in text or binary mode.  So probably the simplest solution for now (as opposed to adding new methods or something like that) is to change `Header.fromstring` to accept unicode or bytes string types.\r\n\r\n`Card.fromstring` likely needs a similar treatment.\n\n</issue>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGE4ZGU1OWIxNjVlNTkzZjAwNmE2N2ZmMDAxMjk0ODE5N2E3OWQ3NjA2ZGU3NzE4OTQ=",
+      "created_at": 1785200384,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a8de59b165e593f006a67ff008bc08197a332464bd80e4347",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_8Dhl0I1K_g3eccQwlIjPucwgrdLo60d8o60ndtL-VqBRtq0Wz-XcwIxuPFFNbBmlt2gdUhI_g8n-NIMUSg_w5fkq_RZCU-ss1SKkdtKR-srAuVtbBqzkqTmESBuJ3sPTO9WuiKwJkjeR6aE720F8HmoolQ4ibpIKcNUQMbTVNPJt6DZat1Zc3MuLfR9TB9T-IB9jGtG8JAOA7J9vW3_bsMRuMd625CZgOPjg2g9OM1Si0tdFnwFrRXPt_OKLHrAAnnrQMT_BA5SrvFlc_NrfNBg5CxiGMrnMkZTPTmn6GbY2JHkBjWWL8tHm6DKzZl0hbMgRt72Y9zNY7c81bRXEPuDNfHpx8yeaVDMws8UnKfYGR_uZoK-m0Yvx1iRIgorjl__nmhxwXgL_VUW72BLuUyL5NJA-Kmdl5V3XgiqbyQYtdhlNj988JrSBKiNKjEbxf2WkxZO_dwVC3MWSN1UWwWwCA96M7ujwsD-A-CKT8yQCG04KM6YmLdFrB1ClPM7AHR8VQbCiTX5wi5AmkZ0L9kOL2Bj6zbA1USZEZThuTMdbbhzc8IlL58yuog3s2t08h9xqq3aOAZaat-hjn24x4ga5hnJ-fLODssTaDFBr_dedgCtEmZO1oWMSsMyQ91nRJkSlx4F8fEBUJWpJMN20aBNGtvIDDllZQGtbQ5ZpxiNvNZv0iQ-oh3KqvQjN5s-kb_wH8sXKQy-gCaxxrP_0uXcn_S20pd1y_bG4XARVBA1Yn1yNbsql9xExiezDw8GM9dC8W8LqXFKwfh0I1N-tACgQs6gT3tlZVwboZ1rX0of8YKeNw8f213jATGnu3d_ENvRxtsFJRFbY1KFS9tfkwAsg09MWM35F0WzUonnGXe5tdU0J4mxgY8WDYsaFPfj-qB9xZNg47X2f-YzYkNm-29AKPRNwhKWCjP4RYjxweYJSSvctBI3EJv2FXFcs5q4EMeTL8_XFMEDWXTYkmr_xsyM1f-tFIILZwoIqHGLlichD5bgZ0tT_PrIQ6annRMyyvepHpjZqPyKGpFeBYJ1Wr15UJu_Ym3cbilM2UQO5poD4bIVW9Ag_A4KmtQYyfAPKH1YUDhHcOsKRvIi_GTSO5f0eAJkF6r__OOviVD6MqRsJsvpBeGXZEzWf9IiU-K2uMn6_IK0KYShsGC0NNQpMHE3bKgvB3K-cNAgTameS_qhIvja9RGQSQ7QNlNylKESlPX2tfYNfoi7XgmxrZ2-zEbdlOiBvtXCCX69CWCUkrXO01RBURTRlmYV3VhNqMj84Gqdb8FcDpScqo3KAy6MzK6N0gLOfmnlTeDRG6fvelwg_BTQHmCpaDkfipErazMXsryLlr-LjPHyDWafPJJ598cUHBlSbNvMj9FTPpEQA_Xit4QMbp5tL5wTF7HRX-R6-0SYyYAuMGqGooyQS2zmOGAFuAkcAdMw2g9FP729F2DYxSBXBYWyaLi65ot3XgNXM8akA8yqEIGu3SpDR4aXT6XnlH8CGSLdJeYmXjGihyIM9rUdCdKSmWV7IFJAE9YL-hf9mT3nqWaDpH9utoLN_r5jEAtJXoRWliPLdOvtRLaviNfj87izmTzk_QYeailE-wmtD_xaHsZ-owZ35cxajAUaBq8fxwsGT61NlcEZ-GLAkgm5HoKoKiVpMhTMK1K9l780ABDvaSvEVjRDSEk3w3aFFldqAJCXB9teFQ4_yWUzOcW7va5cuyEdxpt2EqejTUh7QkRrHfPrh8e6hS24pSBrbKazW6_fhTan8PT3r_88DLKvY8_hOa9Ub5hqvqhQ15kIHQLg9NK8o-OM90Idhwmkd_Ke6h8Hc8CQLnFcNd3XZY="
+        },
+        {
+          "id": "msg_0a8de59b165e593f006a67ff0233188197a935601b71b266b2",
+          "content": [
+            {
+              "annotations": [],
+              "text": "I\u2019ll locate the relevant FITS header/card parsing code paths and current type handling first.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && ls -la\"}",
+          "call_id": "call_q1xCTwYHfla9enVDMLeGAPE7",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a8de59b165e593f006a67ff02bcfc8197a341ad0275fa0041",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 544,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 186,
+        "output_tokens_details": {
+          "reasoning_tokens": 134,
+          "text_tokens": null
+        },
+        "total_tokens": 730,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785200386,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && ls -la",
+            "tool_call_id": "call_q1xCTwYHfla9enVDMLeGAPE7"
+          }
+        ],
+        "cost": 0.003556,
+        "timestamp": 1785200387.296689
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "total 544\ndrwxrwxrwx  1 root root   4096 Sep 10  2025 .\ndrwxr-xr-x  1 root root   4096 Jul 28 00:59 ..\n-rw-r--r--  1 root root      0 Sep 10  2025 .astropy-root\ndrwxrwxrwx  2 root root   4096 Sep 10  2025 .circleci\ndrwxr-xr-x  3 root root   4096 Sep 10  2025 .eggs\ndrwxrwxrwx  9 root root   4096 Sep 10  2025 .git\n-rw-r--r--  1 root root     73 Sep 10  2025 .gitattributes\n-rw-r--r--  1 root root    786 Sep 10  2025 .gitignore\n-rw-r--r--  1 root root    108 Sep 10  2025 .gitmodules\n-rw-r--r--  1 root root  10595 Sep 10  2025 .mailmap\n-rw-r--r--  1 root root    150 Sep 10  2025 .readthedocs.yml\n-rw-r--r--  1 root root   7840 Sep 10  2025 .travis.yml\n-rw-r--r--  1 root root 360808 Sep 10  2025 CHANGES.rst\nlrwxrwxrwx  1 root root     16 Sep 10  2025 CITATION -> astropy/CITATION\n-rw-r--r--  1 root root    139 Sep 10  2025 CODE_OF_CONDUCT.md\n-rw-r--r--  1 root root   8904 Sep 10  2025 CONTRIBUTING.md\n-rw-r--r--  1 root root    128 Sep 10  2025 GOVERNANCE.md\n-rw-r--r--  1 root root   1496 Sep 10  2025 LICENSE.rst\n-rw-r--r--  1 root root   1521 Sep 10  2025 MANIFEST.in\n-rw-r--r--  1 root root   3784 Sep 10  2025 README.rst\ndrwxr-xr-x  2 root root   4096 Sep 10  2025 __pycache__\n-rw-r--r--  1 root root  37276 Sep 10  2025 ah_bootstrap.py\n-rw-r--r--  1 root root   1140 Sep 10  2025 appveyor.yml\ndrwxrwxrwx 24 root root   4096 Sep 10  2025 astropy\ndrwxr-xr-x  2 root root   4096 Sep 10  2025 astropy.egg-info\ndrwxr-xr-x  7 root root   4096 Sep 10  2025 astropy_helpers\ndrwxr-xr-x  4 root root   4096 Sep 10  2025 build\ndrwxrwxrwx  6 root root   4096 Sep 10  2025 cextern\n-rw-r--r--  1 root root    123 Sep 10  2025 conftest.py\ndrwxrwxrwx 24 root root   4096 Sep 10  2025 docs\ndrwxr-xr-x  5 root root   4096 Sep 10  2025 examples\ndrwxrwxrwx  2 root root   4096 Sep 10  2025 licenses\n-rw-r--r--  1 root root    268 Sep 10  2025 pip-requirements\n-rw-r--r--  1 root root   3059 Sep 10  2025 setup.cfg\n-rwxr-xr-x  1 root root   1348 Sep 10  2025 setup.py\ndrwxr-xr-x  2 root root   4096 Sep 10  2025 static\n",
+        "returncode": 0,
+        "timestamp": 1785200387.4388142,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_q1xCTwYHfla9enVDMLeGAPE7",
+      "output": "<returncode>0</returncode>\n<output>\ntotal 544\ndrwxrwxrwx  1 root root   4096 Sep 10  2025 .\ndrwxr-xr-x  1 root root   4096 Jul 28 00:59 ..\n-rw-r--r--  1 root root      0 Sep 10  2025 .astropy-root\ndrwxrwxrwx  2 root root   4096 Sep 10  2025 .circleci\ndrwxr-xr-x  3 root root   4096 Sep 10  2025 .eggs\ndrwxrwxrwx  9 root root   4096 Sep 10  2025 .git\n-rw-r--r--  1 root root     73 Sep 10  2025 .gitattributes\n-rw-r--r--  1 root root    786 Sep 10  2025 .gitignore\n-rw-r--r--  1 root root    108 Sep 10  2025 .gitmodules\n-rw-r--r--  1 root root  10595 Sep 10  2025 .mailmap\n-rw-r--r--  1 root root    150 Sep 10  2025 .readthedocs.yml\n-rw-r--r--  1 root root   7840 Sep 10  2025 .travis.yml\n-rw-r--r--  1 root root 360808 Sep 10  2025 CHANGES.rst\nlrwxrwxrwx  1 root root     16 Sep 10  2025 CITATION -> astropy/CITATION\n-rw-r--r--  1 root root    139 Sep 10  2025 CODE_OF_CONDUCT.md\n-rw-r--r--  1 root root   8904 Sep 10  2025 CONTRIBUTING.md\n-rw-r--r--  1 root root    128 Sep 10  2025 GOVERNANCE.md\n-rw-r--r--  1 root root   1496 Sep 10  2025 LICENSE.rst\n-rw-r--r--  1 root root   1521 Sep 10  2025 MANIFEST.in\n-rw-r--r--  1 root root   3784 Sep 10  2025 README.rst\ndrwxr-xr-x  2 root root   4096 Sep 10  2025 __pycache__\n-rw-r--r--  1 root root  37276 Sep 10  2025 ah_bootstrap.py\n-rw-r--r--  1 root root   1140 Sep 10  2025 appveyor.yml\ndrwxrwxrwx 24 root root   4096 Sep 10  2025 astropy\ndrwxr-xr-x  2 root root   4096 Sep 10  2025 astropy.egg-info\ndrwxr-xr-x  7 root root   4096 Sep 10  2025 astropy_helpers\ndrwxr-xr-x  4 root root   4096 Sep 10  2025 build\ndrwxrwxrwx  6 root root   4096 Sep 10  2025 cextern\n-rw-r--r--  1 root root    123 Sep 10  2025 conftest.py\ndrwxrwxrwx 24 root root   4096 Sep 10  2025 docs\ndrwxr-xr-x  5 root root   4096 Sep 10  2025 examples\ndrwxrwxrwx  2 root root   4096 Sep 10  2025 licenses\n-rw-r--r--  1 root root    268 Sep 10  2025 pip-requirements\n-rw-r--r--  1 root root   3059 Sep 10  2025 setup.cfg\n-rwxr-xr-x  1 root root   1348 Sep 10  2025 setup.py\ndrwxr-xr-x  2 root root   4096 Sep 10  2025 static\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGE4ZGU1OWIxNjVlNTkzZjAwNmE2N2ZmMDNhMTYwODE5N2E2YTJiYjQ1ZjAzMGM3NDM=",
+      "created_at": 1785200387,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a8de59b165e593f006a67ff0408a48197a20ba8d8ba60cd01",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_8FXgndCZb3RPuMy_eQ25vuuZ57zyqzqwTYlnLajyJ2xRPNMJtCe8G-S2EYShpXqLEGn0UvlKMRYC8DvVlNa8WyCRLr-e7rjGPWaRZ7CmutQPUsVOp5vfsCu14bWGrCBGgMBUCREyfqHGrv_qHGWaOM1h1DLsCXZ5xtEBd5fxuP0-syWYOVHWROtnMl0cUh1SaaIis4brwFdozcNx8tB4s7biBd12EnAcwFomZ39YDXgMGPOmkUWuu-twxO7lJ6EJo_URKNlpzbZqchMfeV-dWVoZ8a5JxpqqZfSmKDBzb0NOyl05d9AMhzIDKaWc_2WSSqIcggMj3_GXDuA885PX6tvQPMjt74_59_01VSlgiTapGwYWnicJejDv8wJYolS9eP-slLghpcQrBqbNH2PuoZJf4O1KPe40YyccvyZR24k7_6_gXIhnMyxPaq-42nnOzsOYL43nBQgRWtSK5ms6Kgd5fDYSPxjQkJfUH-vg0ybxaWhIq9hXoMbNCk6YbkVP5lnWlLKrR1JOWu0XAJvPfiMX5wRHROOCGd2earXKjjnMIIclZYIaGVcDVx-Upg-0vg1hu_5Zb79QQlMZirZOrdNW1wqQXiJt_hWqAI-ly9Tb9P9_bADJ2W49rNZRiwPbx6uFzHSKAG3CgTzbjvF97xkGbzqL5VMJHWKc5x_itx3l5Sy8-mV5UPZqyM3roruila6HQ4OiGf-L9LsvNx1TlsvWwOBjHixt0p5XGrDPcXO_wnu9dmiK2DQntS5ukNs7iltuTxO8xKcUkhJ3zAWOv-S_r5cdbBin_xhFA7MCpoFmzvfMX337ug91FUy74cdJ44g41399vTPP_eKpspYa0USWGPb1b0moV02z0-gtaRhnTv9QIAKjhQ0N91wzjU0STc_nOuxYO7490hnzd3hY6wnpjGV8acUerEYcNDRdPs2bmL8dGlzkQCgbtOHQHnHgDZCgPwZL2aco5KrLPJL4Pv57A1Vjo7imaNFjHR6JJCrg8="
+        },
+        {
+          "id": "msg_0a8de59b165e593f006a67ff0426b4819783736879e2b1228b",
+          "content": [
+            {
+              "annotations": [],
+              "text": "Next I\u2019ll find `Header.fromstring` and `Card.fromstring` implementations and related tests.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && grep -R \\\"def fromstring\\\" -n astropy/io/fits | head -n 20\"}",
+          "call_id": "call_NyQUWqztG3clMPzGuFN4vQ65",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a8de59b165e593f006a67ff04593c8197b3a91e961dc9ea6b",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 1681,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 0,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 83,
+        "output_tokens_details": {
+          "reasoning_tokens": 11,
+          "text_tokens": null
+        },
+        "total_tokens": 1764,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785200388,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && grep -R \"def fromstring\" -n astropy/io/fits | head -n 20",
+            "tool_call_id": "call_NyQUWqztG3clMPzGuFN4vQ65"
+          }
+        ],
+        "cost": 0.00410375,
+        "timestamp": 1785200389.0446
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "astropy/io/fits/hdu/hdulist.py:393:    def fromstring(cls, data, **kwargs):\nastropy/io/fits/hdu/base.py:248:    def fromstring(cls, data, checksum=False, ignore_missing_end=False,\nastropy/io/fits/header.py:330:    def fromstring(cls, data, sep=''):\nastropy/io/fits/card.py:548:    def fromstring(cls, image):\n",
+        "returncode": 0,
+        "timestamp": 1785200389.2100477,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_NyQUWqztG3clMPzGuFN4vQ65",
+      "output": "<returncode>0</returncode>\n<output>\nastropy/io/fits/hdu/hdulist.py:393:    def fromstring(cls, data, **kwargs):\nastropy/io/fits/hdu/base.py:248:    def fromstring(cls, data, checksum=False, ignore_missing_end=False,\nastropy/io/fits/header.py:330:    def fromstring(cls, data, sep=''):\nastropy/io/fits/card.py:548:    def fromstring(cls, image):\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGE4ZGU1OWIxNjVlNTkzZjAwNmE2N2ZmMDU2YzA4ODE5N2ExNWRlZDYxZTQzMTY5NTE=",
+      "created_at": 1785200389,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a8de59b165e593f006a67ff05f2bc81979a603a4156af980c",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_8GfGX4lG5SVt4YfdPQLyDbmMaOEGC69rnVTCaW5Ix9NRTWCDPULNdag3G4z7SmthtWGKQcsirstaxZ5aYjGUJ7JLkY3M88BZixBNWUgnYfg6O6EbXWZYx_Y-PjUtzWzDYD3qGdstH1gWSuIW40wvMaLIxpcjfr3K4feusKUzOGQ_ApTrnouZJL0_14NToshLuZeLazcdAZFZh0_aTCzjVI8-JDCctDvQTHwgCsPv_r5f40zy7WM2NIoDknecOQ-Rv_wbJqLsKsy0F5uO4h5A4mONEz8yKkDDaq-jjmeuTsZMyoh9Tcel4kBty-R2PCCPKY8-w5xOaHHvnwmU5ZjnKlzrAuASMxIyTya_DD7bGUAL7J6K5396N-wgUaOYenK0vp60724N2ZE2MiMqUfL3-UWlpPooRF8cBqssSAY_8y7gBeItT-SGTtgSkmjeqUV_32fdZ8jJaZ77u4sYphTnPgh4NyLdll3wltLFEHemgYx3200aDOf6_2UnJjsLs2CnwvvszIOPghHE8XFF_jwTBOXWMCqj3SZY3bJXo8IBKd1UmTGXGh-dth5CkoattrDxdCah6BqV9DHQMAa5PELbmCHJviSFqfAycI-ghvBtfh2X1OGMcx3xKioMsbzC9NqdQ5uJ7XoknAdBhyKLH1UgPXAnF8W2GI7LnJkHzqVYT5SKmjlO-ALb9Kvw7qz53qF56nZS4If6oH1ScSKHbJLhL_eHatcPfeG03GkVrCzFoYAdFFYoJYyo_ozA1a5gfFURtoV3pfNNO2orjRksk7BcNthVgi-8zLQcJ5xGtmX3KR0XdsXMKI1FLUKxI4efCCEXgno_RukNVombLaeLTvba1jE_AKLQqW1n85fOgsmB4ggVpnit1UQCWteIBDBvztQUvDsOG1SeTnyPLfJ-dyraeNFW1IuzMtdLoOZCSXcrVF85RnCSAoJ0PrJUmVstC57Rr9"
+        },
+        {
+          "id": "msg_0a8de59b165e593f006a67ff06081081978a9e48e15dd0ccfe",
+          "content": [
+            {
+              "annotations": [],
+              "text": "I\u2019ll inspect the exact type checks and encoding assumptions in those methods.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '260,430p' astropy/io/fits/header.py\"}",
+          "call_id": "call_2CgSUOMIbr6HhEHMPNzVwO6F",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a8de59b165e593f006a67ff0638d8819780ffba8e2aa2e4c4",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 1883,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 1536,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 69,
+        "output_tokens_details": {
+          "reasoning_tokens": 8,
+          "text_tokens": null
+        },
+        "total_tokens": 1952,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785200390,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '260,430p' astropy/io/fits/header.py",
+            "tool_call_id": "call_2CgSUOMIbr6HhEHMPNzVwO6F"
+          }
+        ],
+        "cost": 0.00184205,
+        "timestamp": 1785200390.8826563
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "        return self.tostring()\n\n    def __eq__(self, other):\n        \"\"\"\n        Two Headers are equal only if they have the exact same string\n        representation.\n        \"\"\"\n\n        return str(self) == str(other)\n\n    def __add__(self, other):\n        temp = self.copy(strip=False)\n        temp.extend(other)\n        return temp\n\n    def __iadd__(self, other):\n        self.extend(other)\n        return self\n\n    def _ipython_key_completions_(self):\n        return self.__iter__()\n\n    @property\n    def cards(self):\n        \"\"\"\n        The underlying physical cards that make up this Header; it can be\n        looked at, but it should not be modified directly.\n        \"\"\"\n\n        return _CardAccessor(self)\n\n    @property\n    def comments(self):\n        \"\"\"\n        View the comments associated with each keyword, if any.\n\n        For example, to see the comment on the NAXIS keyword:\n\n            >>> header.comments['NAXIS']\n            number of data axes\n\n        Comments can also be updated through this interface:\n\n            >>> header.comments['NAXIS'] = 'Number of data axes'\n\n        \"\"\"\n\n        return _HeaderComments(self)\n\n    @property\n    def _modified(self):\n        \"\"\"\n        Whether or not the header has been modified; this is a property so that\n        it can also check each card for modifications--cards may have been\n        modified directly without the header containing it otherwise knowing.\n        \"\"\"\n\n        modified_cards = any(c._modified for c in self._cards)\n        if modified_cards:\n            # If any cards were modified then by definition the header was\n            # modified\n            self.__dict__['_modified'] = True\n\n        return self.__dict__['_modified']\n\n    @_modified.setter\n    def _modified(self, val):\n        self.__dict__['_modified'] = val\n\n    @classmethod\n    def fromstring(cls, data, sep=''):\n        \"\"\"\n        Creates an HDU header from a byte string containing the entire header\n        data.\n\n        Parameters\n        ----------\n        data : str\n           String containing the entire header.\n\n        sep : str, optional\n            The string separating cards from each other, such as a newline.  By\n            default there is no card separator (as is the case in a raw FITS\n            file).\n\n        Returns\n        -------\n        header\n            A new `Header` instance.\n        \"\"\"\n\n        cards = []\n\n        # If the card separator contains characters that may validly appear in\n        # a card, the only way to unambiguously distinguish between cards is to\n        # require that they be Card.length long.  However, if the separator\n        # contains non-valid characters (namely \\n) the cards may be split\n        # immediately at the separator\n        require_full_cardlength = set(sep).issubset(VALID_HEADER_CHARS)\n\n        # Split the header into individual cards\n        idx = 0\n        image = []\n\n        while idx < len(data):\n            if require_full_cardlength:\n                end_idx = idx + Card.length\n            else:\n                try:\n                    end_idx = data.index(sep, idx)\n                except ValueError:\n                    end_idx = len(data)\n\n            next_image = data[idx:end_idx]\n            idx = end_idx + len(sep)\n\n            if image:\n                if next_image[:8] == 'CONTINUE':\n                    image.append(next_image)\n                    continue\n                cards.append(Card.fromstring(''.join(image)))\n\n            if require_full_cardlength:\n                if next_image == END_CARD:\n                    image = []\n                    break\n            else:\n                if next_image.split(sep)[0].rstrip() == 'END':\n                    image = []\n                    break\n\n            image = [next_image]\n\n        # Add the last image that was found before the end, if any\n        if image:\n            cards.append(Card.fromstring(''.join(image)))\n\n        return cls._fromcards(cards)\n\n    @classmethod\n    def fromfile(cls, fileobj, sep='', endcard=True, padding=True):\n        \"\"\"\n        Similar to :meth:`Header.fromstring`, but reads the header string from\n        a given file-like object or filename.\n\n        Parameters\n        ----------\n        fileobj : str, file-like\n            A filename or an open file-like object from which a FITS header is\n            to be read.  For open file handles the file pointer must be at the\n            beginning of the header.\n\n        sep : str, optional\n            The string separating cards from each other, such as a newline.  By\n            default there is no card separator (as is the case in a raw FITS\n            file).\n\n        endcard : bool, optional\n            If True (the default) the header must end with an END card in order\n            to be considered valid.  If an END card is not found an\n            `OSError` is raised.\n\n        padding : bool, optional\n            If True (the default) the header will be required to be padded out\n            to a multiple of 2880, the FITS header block size.  Otherwise any\n            padding, or lack thereof, is ignored.\n\n        Returns\n        -------\n        header\n            A new `Header` instance.\n",
+        "returncode": 0,
+        "timestamp": 1785200391.0258718,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_2CgSUOMIbr6HhEHMPNzVwO6F",
+      "output": "<returncode>0</returncode>\n<output>\n        return self.tostring()\n\n    def __eq__(self, other):\n        \"\"\"\n        Two Headers are equal only if they have the exact same string\n        representation.\n        \"\"\"\n\n        return str(self) == str(other)\n\n    def __add__(self, other):\n        temp = self.copy(strip=False)\n        temp.extend(other)\n        return temp\n\n    def __iadd__(self, other):\n        self.extend(other)\n        return self\n\n    def _ipython_key_completions_(self):\n        return self.__iter__()\n\n    @property\n    def cards(self):\n        \"\"\"\n        The underlying physical cards that make up this Header; it can be\n        looked at, but it should not be modified directly.\n        \"\"\"\n\n        return _CardAccessor(self)\n\n    @property\n    def comments(self):\n        \"\"\"\n        View the comments associated with each keyword, if any.\n\n        For example, to see the comment on the NAXIS keyword:\n\n            >>> header.comments['NAXIS']\n            number of data axes\n\n        Comments can also be updated through this interface:\n\n            >>> header.comments['NAXIS'] = 'Number of data axes'\n\n        \"\"\"\n\n        return _HeaderComments(self)\n\n    @property\n    def _modified(self):\n        \"\"\"\n        Whether or not the header has been modified; this is a property so that\n        it can also check each card for modifications--cards may have been\n        modified directly without the header containing it otherwise knowing.\n        \"\"\"\n\n        modified_cards = any(c._modified for c in self._cards)\n        if modified_cards:\n            # If any cards were modified then by definition the header was\n            # modified\n            self.__dict__['_modified'] = True\n\n        return self.__dict__['_modified']\n\n    @_modified.setter\n    def _modified(self, val):\n        self.__dict__['_modified'] = val\n\n    @classmethod\n    def fromstring(cls, data, sep=''):\n        \"\"\"\n        Creates an HDU header from a byte string containing the entire header\n        data.\n\n        Parameters\n        ----------\n        data : str\n           String containing the entire header.\n\n        sep : str, optional\n            The string separating cards from each other, such as a newline.  By\n            default there is no card separator (as is the case in a raw FITS\n            file).\n\n        Returns\n        -------\n        header\n            A new `Header` instance.\n        \"\"\"\n\n        cards = []\n\n        # If the card separator contains characters that may validly appear in\n        # a card, the only way to unambiguously distinguish between cards is to\n        # require that they be Card.length long.  However, if the separator\n        # contains non-valid characters (namely \\n) the cards may be split\n        # immediately at the separator\n        require_full_cardlength = set(sep).issubset(VALID_HEADER_CHARS)\n\n        # Split the header into individual cards\n        idx = 0\n        image = []\n\n        while idx < len(data):\n            if require_full_cardlength:\n                end_idx = idx + Card.length\n            else:\n                try:\n                    end_idx = data.index(sep, idx)\n                except ValueError:\n                    end_idx = len(data)\n\n            next_image = data[idx:end_idx]\n            idx = end_idx + len(sep)\n\n            if image:\n                if next_image[:8] == 'CONTINUE':\n                    image.append(next_image)\n                    continue\n                cards.append(Card.fromstring(''.join(image)))\n\n            if require_full_cardlength:\n                if next_image == END_CARD:\n                    image = []\n                    break\n            else:\n                if next_image.split(sep)[0].rstrip() == 'END':\n                    image = []\n                    break\n\n            image = [next_image]\n\n        # Add the last image that was found before the end, if any\n        if image:\n            cards.append(Card.fromstring(''.join(image)))\n\n        return cls._fromcards(cards)\n\n    @classmethod\n    def fromfile(cls, fileobj, sep='', endcard=True, padding=True):\n        \"\"\"\n        Similar to :meth:`Header.fromstring`, but reads the header string from\n        a given file-like object or filename.\n\n        Parameters\n        ----------\n        fileobj : str, file-like\n            A filename or an open file-like object from which a FITS header is\n            to be read.  For open file handles the file pointer must be at the\n            beginning of the header.\n\n        sep : str, optional\n            The string separating cards from each other, such as a newline.  By\n            default there is no card separator (as is the case in a raw FITS\n            file).\n\n        endcard : bool, optional\n            If True (the default) the header must end with an END card in order\n            to be considered valid.  If an END card is not found an\n            `OSError` is raised.\n\n        padding : bool, optional\n            If True (the default) the header will be required to be padded out\n            to a multiple of 2880, the FITS header block size.  Otherwise any\n            padding, or lack thereof, is ignored.\n\n        Returns\n        -------\n        header\n            A new `Header` instance.\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGE4ZGU1OWIxNjVlNTkzZjAwNmE2N2ZmMDczZTcwODE5NzlmZmQwYmUwOWFlZWI2YmI=",
+      "created_at": 1785200391,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a8de59b165e593f006a67ff07989c8197a5535bcc5e99a9d6",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_8IlQaum8msE_3qLCstKSXREyFYof-buIK4EQpnqT9J9KzQLOUq47EKN4q6WAPq7wcB3T-gP02f6O4KAm-Vpsp6QeGjQwjWFZs1JlGk9byN1qjYXvsY7EpaDv3P_16AxJaO5rpWK66hhptZk8Dzdo2lBwt8hpdrhPwQ-QFxxbXxFyp7-Al9IMMSpJAO5kjfKJVFTagwPWYlCoCdYLXaJq9T1odwteIOm5Io6vqPxNHwu3VGSkxArsvdDnxeE6Ub93jhPLQXu0p_NO57mHMLUtFBBQwuJWokKwiK8EXAq6w3xfbdZWTUVLgkZEWK_08lt5CysC6Jfagwi6nCF2J93lGjsCvBWNnBr-s7NIsPbC1gROyPA3c5jsc34GZsiQjmzCLcPMZmnTWvDO7pGuSmC3usyeSX-ePbVh5yiULk9FmyUg9CdUplldqeA29n3r2373JNBHiBJAc6V1lu0Pj5xCBtkxmHhZVmjicoF_0-JqYRWR1dv3sX55NYwA3qzq0uOgG5cEXqQ6YBl6izaHvZo3V36ETtRH7_XvoFTI96_6xmzGuKo8bQxhmcUTAHwX42bSqXVYUPI_sdG9UhEMvKJeMhKmBbRweKzgS-ZEQwvdu4TetPn33NYJf7k_lKERd7tgvz5SfQk6I7nDynUY9OcfIOhWK8XUu0h4mHLpImCBAZgzCZawtIRNECeAdcIU9lODSlib_2-FJaEBgSQ7-tH7zdPNI-USxKewImwIYrED_wsi50opCPuLtV1XNFYgstn52kLHYkPXTbzVmiZrHtQnisn7E-Uit3BUrhEI7WqNx0BtGzaGPE_LeKCGocbKQNx92gurQOgdy4qlRtA0Lrk3jWsfpnPPbQOkKv409cdc1wl-ROunFHPSxrhCB8GBDQlLQFUfAR_Jp_Zy6Dokz8Pq5gpVbk6jPTy1R3CeVpHaDgThaFlbjkkPpBssQa7BvSqY8vFx2bILbU2qhrcjjW_UWsHA=="
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '430,620p' astropy/io/fits/header.py\"}",
+          "call_id": "call_O5VxPTGT8ej9Q4cC62Hu5Eug",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a8de59b165e593f006a67ff07bbe881978b7f38fac9239da0",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 3063,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 1536,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 52,
+        "output_tokens_details": {
+          "reasoning_tokens": 12,
+          "text_tokens": null
+        },
+        "total_tokens": 3115,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785200392,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '430,620p' astropy/io/fits/header.py",
+            "tool_call_id": "call_O5VxPTGT8ej9Q4cC62Hu5Eug"
+          }
+        ],
+        "cost": 0.00366905,
+        "timestamp": 1785200392.3283055
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "            A new `Header` instance.\n        \"\"\"\n\n        close_file = False\n        if isinstance(fileobj, str):\n            # Open in text mode by default to support newline handling; if a\n            # binary-mode file object is passed in, the user is on their own\n            # with respect to newline handling\n            fileobj = open(fileobj, 'r')\n            close_file = True\n\n        try:\n            is_binary = fileobj_is_binary(fileobj)\n\n            def block_iter(nbytes):\n                while True:\n                    data = fileobj.read(nbytes)\n\n                    if data:\n                        yield data\n                    else:\n                        break\n\n            return cls._from_blocks(block_iter, is_binary, sep, endcard,\n                                    padding)[1]\n        finally:\n            if close_file:\n                fileobj.close()\n\n    @classmethod\n    def _fromcards(cls, cards):\n        header = cls()\n        for idx, card in enumerate(cards):\n            header._cards.append(card)\n            keyword = Card.normalize_keyword(card.keyword)\n            header._keyword_indices[keyword].append(idx)\n            if card.field_specifier is not None:\n                header._rvkc_indices[card.rawkeyword].append(idx)\n\n        header._modified = False\n        return header\n\n    @classmethod\n    def _from_blocks(cls, block_iter, is_binary, sep, endcard, padding):\n        \"\"\"\n        The meat of `Header.fromfile`; in a separate method so that\n        `Header.fromfile` itself is just responsible for wrapping file\n        handling.  Also used by `_BaseHDU.fromstring`.\n\n        ``block_iter`` should be a callable which, given a block size n\n        (typically 2880 bytes as used by the FITS standard) returns an iterator\n        of byte strings of that block size.\n\n        ``is_binary`` specifies whether the returned blocks are bytes or text\n\n        Returns both the entire header *string*, and the `Header` object\n        returned by Header.fromstring on that string.\n        \"\"\"\n\n        actual_block_size = _block_size(sep)\n        clen = Card.length + len(sep)\n\n        blocks = block_iter(actual_block_size)\n\n        # Read the first header block.\n        try:\n            block = next(blocks)\n        except StopIteration:\n            raise EOFError()\n\n        if not is_binary:\n            # TODO: There needs to be error handling at *this* level for\n            # non-ASCII characters; maybe at this stage decoding latin-1 might\n            # be safer\n            block = encode_ascii(block)\n\n        read_blocks = []\n        is_eof = False\n        end_found = False\n\n        # continue reading header blocks until END card or EOF is reached\n        while True:\n            # find the END card\n            end_found, block = cls._find_end_card(block, clen)\n\n            read_blocks.append(decode_ascii(block))\n\n            if end_found:\n                break\n\n            try:\n                block = next(blocks)\n            except StopIteration:\n                is_eof = True\n                break\n\n            if not block:\n                is_eof = True\n                break\n\n            if not is_binary:\n                block = encode_ascii(block)\n\n        if not end_found and is_eof and endcard:\n            # TODO: Pass this error to validation framework as an ERROR,\n            # rather than raising an exception\n            raise OSError('Header missing END card.')\n\n        header_str = ''.join(read_blocks)\n        _check_padding(header_str, actual_block_size, is_eof,\n                       check_block_size=padding)\n\n        return header_str, cls.fromstring(header_str, sep=sep)\n\n    @classmethod\n    def _find_end_card(cls, block, card_len):\n        \"\"\"\n        Utility method to search a header block for the END card and handle\n        invalid END cards.\n\n        This method can also returned a modified copy of the input header block\n        in case an invalid end card needs to be sanitized.\n        \"\"\"\n\n        for mo in HEADER_END_RE.finditer(block):\n            # Ensure the END card was found, and it started on the\n            # boundary of a new card (see ticket #142)\n            if mo.start() % card_len != 0:\n                continue\n\n            # This must be the last header block, otherwise the\n            # file is malformatted\n            if mo.group('invalid'):\n                offset = mo.start()\n                trailing = block[offset + 3:offset + card_len - 3].rstrip()\n                if trailing:\n                    trailing = repr(trailing).lstrip('ub')\n                    # TODO: Pass this warning up to the validation framework\n                    warnings.warn(\n                        'Unexpected bytes trailing END keyword: {0}; these '\n                        'bytes will be replaced with spaces on write.'.format(\n                            trailing), AstropyUserWarning)\n                else:\n                    # TODO: Pass this warning up to the validation framework\n                    warnings.warn(\n                        'Missing padding to end of the FITS block after the '\n                        'END keyword; additional spaces will be appended to '\n                        'the file upon writing to pad out to {0} '\n                        'bytes.'.format(BLOCK_SIZE), AstropyUserWarning)\n\n                # Sanitize out invalid END card now that the appropriate\n                # warnings have been issued\n                block = (block[:offset] + encode_ascii(END_CARD) +\n                         block[offset + len(END_CARD):])\n\n            return True, block\n\n        return False, block\n\n    def tostring(self, sep='', endcard=True, padding=True):\n        r\"\"\"\n        Returns a string representation of the header.\n\n        By default this uses no separator between cards, adds the END card, and\n        pads the string with spaces to the next multiple of 2880 bytes.  That\n        is, it returns the header exactly as it would appear in a FITS file.\n\n        Parameters\n        ----------\n        sep : str, optional\n            The character or string with which to separate cards.  By default\n            there is no separator, but one could use ``'\\\\n'``, for example, to\n            separate each card with a new line\n\n        endcard : bool, optional\n            If True (default) adds the END card to the end of the header\n            string\n\n        padding : bool, optional\n            If True (default) pads the string with spaces out to the next\n            multiple of 2880 characters\n\n        Returns\n        -------\n        s : str\n            A string representing a FITS header.\n        \"\"\"\n\n        lines = []\n        for card in self._cards:\n            s = str(card)\n",
+        "returncode": 0,
+        "timestamp": 1785200392.4648836,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_O5VxPTGT8ej9Q4cC62Hu5Eug",
+      "output": "<returncode>0</returncode>\n<output>\n            A new `Header` instance.\n        \"\"\"\n\n        close_file = False\n        if isinstance(fileobj, str):\n            # Open in text mode by default to support newline handling; if a\n            # binary-mode file object is passed in, the user is on their own\n            # with respect to newline handling\n            fileobj = open(fileobj, 'r')\n            close_file = True\n\n        try:\n            is_binary = fileobj_is_binary(fileobj)\n\n            def block_iter(nbytes):\n                while True:\n                    data = fileobj.read(nbytes)\n\n                    if data:\n                        yield data\n                    else:\n                        break\n\n            return cls._from_blocks(block_iter, is_binary, sep, endcard,\n                                    padding)[1]\n        finally:\n            if close_file:\n                fileobj.close()\n\n    @classmethod\n    def _fromcards(cls, cards):\n        header = cls()\n        for idx, card in enumerate(cards):\n            header._cards.append(card)\n            keyword = Card.normalize_keyword(card.keyword)\n            header._keyword_indices[keyword].append(idx)\n            if card.field_specifier is not None:\n                header._rvkc_indices[card.rawkeyword].append(idx)\n\n        header._modified = False\n        return header\n\n    @classmethod\n    def _from_blocks(cls, block_iter, is_binary, sep, endcard, padding):\n        \"\"\"\n        The meat of `Header.fromfile`; in a separate method so that\n        `Header.fromfile` itself is just responsible for wrapping file\n        handling.  Also used by `_BaseHDU.fromstring`.\n\n        ``block_iter`` should be a callable which, given a block size n\n        (typically 2880 bytes as used by the FITS standard) returns an iterator\n        of byte strings of that block size.\n\n        ``is_binary`` specifies whether the returned blocks are bytes or text\n\n        Returns both the entire header *string*, and the `Header` object\n        returned by Header.fromstring on that string.\n        \"\"\"\n\n        actual_block_size = _block_size(sep)\n        clen = Card.length + len(sep)\n\n        blocks = block_iter(actual_block_size)\n\n        # Read the first header block.\n        try:\n            block = next(blocks)\n        except StopIteration:\n            raise EOFError()\n\n        if not is_binary:\n            # TODO: There needs to be error handling at *this* level for\n            # non-ASCII characters; maybe at this stage decoding latin-1 might\n            # be safer\n            block = encode_ascii(block)\n\n        read_blocks = []\n        is_eof = False\n        end_found = False\n\n        # continue reading header blocks until END card or EOF is reached\n        while True:\n            # find the END card\n            end_found, block = cls._find_end_card(block, clen)\n\n            read_blocks.append(decode_ascii(block))\n\n            if end_found:\n                break\n\n            try:\n                block = next(blocks)\n            except StopIteration:\n                is_eof = True\n                break\n\n            if not block:\n                is_eof = True\n                break\n\n            if not is_binary:\n                block = encode_ascii(block)\n\n        if not end_found and is_eof and endcard:\n            # TODO: Pass this error to validation framework as an ERROR,\n            # rather than raising an exception\n            raise OSError('Header missing END card.')\n\n        header_str = ''.join(read_blocks)\n        _check_padding(header_str, actual_block_size, is_eof,\n                       check_block_size=padding)\n\n        return header_str, cls.fromstring(header_str, sep=sep)\n\n    @classmethod\n    def _find_end_card(cls, block, card_len):\n        \"\"\"\n        Utility method to search a header block for the END card and handle\n        invalid END cards.\n\n        This method can also returned a modified copy of the input header block\n        in case an invalid end card needs to be sanitized.\n        \"\"\"\n\n        for mo in HEADER_END_RE.finditer(block):\n            # Ensure the END card was found, and it started on the\n            # boundary of a new card (see ticket #142)\n            if mo.start() % card_len != 0:\n                continue\n\n            # This must be the last header block, otherwise the\n            # file is malformatted\n            if mo.group('invalid'):\n                offset = mo.start()\n                trailing = block[offset + 3:offset + card_len - 3].rstrip()\n                if trailing:\n                    trailing = repr(trailing).lstrip('ub')\n                    # TODO: Pass this warning up to the validation framework\n                    warnings.warn(\n                        'Unexpected bytes trailing END keyword: {0}; these '\n                        'bytes will be replaced with spaces on write.'.format(\n                            trailing), AstropyUserWarning)\n                else:\n                    # TODO: Pass this warning up to the validation framework\n                    warnings.warn(\n                        'Missing padding to end of the FITS block after the '\n                        'END keyword; additional spaces will be appended to '\n                        'the file upon writing to pad out to {0} '\n                        'bytes.'.format(BLOCK_SIZE), AstropyUserWarning)\n\n                # Sanitize out invalid END card now that the appropriate\n                # warnings have been issued\n                block = (block[:offset] + encode_ascii(END_CARD) +\n                         block[offset + len(END_CARD):])\n\n            return True, block\n\n        return False, block\n\n    def tostring(self, sep='', endcard=True, padding=True):\n        r\"\"\"\n        Returns a string representation of the header.\n\n        By default this uses no separator between cards, adds the END card, and\n        pads the string with spaces to the next multiple of 2880 bytes.  That\n        is, it returns the header exactly as it would appear in a FITS file.\n\n        Parameters\n        ----------\n        sep : str, optional\n            The character or string with which to separate cards.  By default\n            there is no separator, but one could use ``'\\\\n'``, for example, to\n            separate each card with a new line\n\n        endcard : bool, optional\n            If True (default) adds the END card to the end of the header\n            string\n\n        padding : bool, optional\n            If True (default) pads the string with spaces out to the next\n            multiple of 2880 characters\n\n        Returns\n        -------\n        s : str\n            A string representing a FITS header.\n        \"\"\"\n\n        lines = []\n        for card in self._cards:\n            s = str(card)\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGE4ZGU1OWIxNjVlNTkzZjAwNmE2N2ZmMDhiNzkwODE5N2JiYjc5NWVhM2M2MTBmNWU=",
+      "created_at": 1785200392,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a8de59b165e593f006a67ff091e148197830940930ad17ae7",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_8JuXZr4NUt8Kd6_PVfHDQJa0NAWbSnHKPilOWnp3JV_EoZ4MJ7RytWB1-MTfg6O4rqhdbiKEJByq1EaNWuovh_Cy_2NfBMQAq9A2MsLdnjQedJcQrYKIsBckllFIHPb4LDTF4jE3WOIyw15UPMXYHpkkcG8Cq2nTzc649dV6vLUmHFUzV64xn0gvH9eKqnXKbkNAFtBUCEpJTtWFaGG2wacUzyyUMhfMYs-W7ZcWYETP-yPe9KlAPPHXFq6bbP-CtWnenxXAvMB9VLbhmQQyokPCPJ8yjhvd9B4A2r6WQAL8xpnT2sUQXCb8jGJvMlTzrwYwtqt6g71Fw9-P1f4g-JECa7Gt-F7P5Dq0zjZJa151oV11aO_daOAaVIGGxq99LLZpQQ16c4snpz7TMSs99H9-bKZQb18v1VkOj48iO_dTAgHr2aiz1cYqVd-Lp3Nm8SI15U2AGA7Nk38OxXehbxdsvvw_1GA-Q-oHHBM57uBlw-yIKRiF1IEC62jSaaU_ZLCaktjPMg_8CoeAjiXKFIpTugK7cKzi9PkiP_00P0FOaqzUpZGhIhVtGsIuow4drecLRz6jA3udj07Cbl7AFKcBygkPHhDgDBbslVvxJdvba0u8PokfJVBGRri6Pxl9YT82PT5UPSOXOq-3Q4smvtWiFnYa1Z9xdZUWJpWW-2efM5VXQQf9lgNLRfYvZ1I3gYQhoXT-zsVgIHfiTdS6JwUfK2ASLf2eqw0otxf4s3d7CZw5DnlRx02-hmjV-4trFskv0uXSrGY-UKWZrLl_NlrXP9QXt0k8B0RXmpLtR0tJVvhvOqGLbJppxokm1CuK0HJppjsUp4AK6-T34CNNSbchwseKHeeZkLGVDRhvGNs_GV8FU0VmUryK5HI7ZDCd7ChyMhB_avFjGv3UGL9BSkLFEz8J5kAnb1xT8TS4c98PF1o7FhQxbyg1qXinnJQKnr"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '470,680p' astropy/io/fits/card.py\"}",
+          "call_id": "call_vv0RbYJRBzUWXGhXbcPtr8Mr",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a8de59b165e593f006a67ff0938b48197b5edb2b57c0d12bf",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 4491,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 2560,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 49,
+        "output_tokens_details": {
+          "reasoning_tokens": 9,
+          "text_tokens": null
+        },
+        "total_tokens": 4540,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785200393,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '470,680p' astropy/io/fits/card.py",
+            "tool_call_id": "call_vv0RbYJRBzUWXGhXbcPtr8Mr"
+          }
+        ],
+        "cost": 0.00451325,
+        "timestamp": 1785200393.8520062
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "    def comment(self):\n        if self._invalid:\n            raise ValueError(\n                'The comment of invalid/unparseable cards cannot deleted.  '\n                'Either delete this card from the header or replace it.')\n\n        self.comment = ''\n\n    @property\n    def field_specifier(self):\n        \"\"\"\n        The field-specifier of record-valued keyword cards; always `None` on\n        normal cards.\n        \"\"\"\n\n        # Ensure that the keyword exists and has been parsed--the will set the\n        # internal _field_specifier attribute if this is a RVKC.\n        if self.keyword:\n            return self._field_specifier\n        else:\n            return None\n\n    @field_specifier.setter\n    def field_specifier(self, field_specifier):\n        if not field_specifier:\n            raise ValueError('The field-specifier may not be blank in '\n                             'record-valued keyword cards.')\n        elif not self.field_specifier:\n            raise AttributeError('Cannot coerce cards to be record-valued '\n                                 'keyword cards by setting the '\n                                 'field_specifier attribute')\n        elif field_specifier != self.field_specifier:\n            self._field_specifier = field_specifier\n            # The keyword need also be updated\n            keyword = self._keyword.split('.', 1)[0]\n            self._keyword = '.'.join([keyword, field_specifier])\n            self._modified = True\n\n    @field_specifier.deleter\n    def field_specifier(self):\n        raise AttributeError('The field_specifier attribute may not be '\n                             'deleted from record-valued keyword cards.')\n\n    @property\n    def image(self):\n        \"\"\"\n        The card \"image\", that is, the 80 byte character string that represents\n        this card in an actual FITS header.\n        \"\"\"\n\n        if self._image and not self._verified:\n            self.verify('fix+warn')\n        if self._image is None or self._modified:\n            self._image = self._format_image()\n        return self._image\n\n    @property\n    def is_blank(self):\n        \"\"\"\n        `True` if the card is completely blank--that is, it has no keyword,\n        value, or comment.  It appears in the header as 80 spaces.\n\n        Returns `False` otherwise.\n        \"\"\"\n\n        if not self._verified:\n            # The card image has not been parsed yet; compare directly with the\n            # string representation of a blank card\n            return self._image == BLANK_CARD\n\n        # If the keyword, value, and comment are all empty (for self.value\n        # explicitly check that it is a string value, since a blank value is\n        # returned as '')\n        return (not self.keyword and\n                (isinstance(self.value, str) and not self.value) and\n                not self.comment)\n\n    @classmethod\n    def fromstring(cls, image):\n        \"\"\"\n        Construct a `Card` object from a (raw) string. It will pad the string\n        if it is not the length of a card image (80 columns).  If the card\n        image is longer than 80 columns, assume it contains ``CONTINUE``\n        card(s).\n        \"\"\"\n\n        card = cls()\n        card._image = _pad(image)\n        card._verified = False\n        return card\n\n    @classmethod\n    def normalize_keyword(cls, keyword):\n        \"\"\"\n        `classmethod` to convert a keyword value that may contain a\n        field-specifier to uppercase.  The effect is to raise the key to\n        uppercase and leave the field specifier in its original case.\n\n        Parameters\n        ----------\n        keyword : or str\n            A keyword value or a ``keyword.field-specifier`` value\n        \"\"\"\n\n        # Test first for the most common case: a standard FITS keyword provided\n        # in standard all-caps\n        if (len(keyword) <= KEYWORD_LENGTH and\n                cls._keywd_FSC_RE.match(keyword)):\n            return keyword\n\n        # Test if this is a record-valued keyword\n        match = cls._rvkc_keyword_name_RE.match(keyword)\n\n        if match:\n            return '.'.join((match.group('keyword').strip().upper(),\n                             match.group('field_specifier')))\n        elif len(keyword) > 9 and keyword[:9].upper() == 'HIERARCH ':\n            # Remove 'HIERARCH' from HIERARCH keywords; this could lead to\n            # ambiguity if there is actually a keyword card containing\n            # \"HIERARCH HIERARCH\", but shame on you if you do that.\n            return keyword[9:].strip().upper()\n        else:\n            # A normal FITS keyword, but provided in non-standard case\n            return keyword.strip().upper()\n\n    def _check_if_rvkc(self, *args):\n        \"\"\"\n        Determine whether or not the card is a record-valued keyword card.\n\n        If one argument is given, that argument is treated as a full card image\n        and parsed as such.  If two arguments are given, the first is treated\n        as the card keyword (including the field-specifier if the card is\n        intended as a RVKC), and the second as the card value OR the first value\n        can be the base keyword, and the second value the 'field-specifier:\n        value' string.\n\n        If the check passes the ._keyword, ._value, and .field_specifier\n        keywords are set.\n\n        Examples\n        --------\n\n        ::\n\n            self._check_if_rvkc('DP1', 'AXIS.1: 2')\n            self._check_if_rvkc('DP1.AXIS.1', 2)\n            self._check_if_rvkc('DP1     = AXIS.1: 2')\n        \"\"\"\n\n        if not conf.enable_record_valued_keyword_cards:\n            return False\n\n        if len(args) == 1:\n            return self._check_if_rvkc_image(*args)\n        elif len(args) == 2:\n            keyword, value = args\n            if not isinstance(keyword, str):\n                return False\n            if keyword in self._commentary_keywords:\n                return False\n            match = self._rvkc_keyword_name_RE.match(keyword)\n            if match and isinstance(value, (int, float)):\n                self._init_rvkc(match.group('keyword'),\n                                match.group('field_specifier'), None, value)\n                return True\n\n            # Testing for ': ' is a quick way to avoid running the full regular\n            # expression, speeding this up for the majority of cases\n            if isinstance(value, str) and value.find(': ') > 0:\n                match = self._rvkc_field_specifier_val_RE.match(value)\n                if match and self._keywd_FSC_RE.match(keyword):\n                    self._init_rvkc(keyword, match.group('keyword'), value,\n                                    match.group('val'))\n                    return True\n\n    def _check_if_rvkc_image(self, *args):\n        \"\"\"\n        Implements `Card._check_if_rvkc` for the case of an unparsed card\n        image.  If given one argument this is the full intact image.  If given\n        two arguments the card has already been split between keyword and\n        value+comment at the standard value indicator '= '.\n        \"\"\"\n\n        if len(args) == 1:\n            image = args[0]\n            eq_idx = image.find(VALUE_INDICATOR)\n            if eq_idx < 0 or eq_idx > 9:\n                return False\n            keyword = image[:eq_idx]\n            rest = image[eq_idx + VALUE_INDICATOR_LEN:]\n        else:\n            keyword, rest = args\n\n        rest = rest.lstrip()\n\n        # This test allows us to skip running the full regular expression for\n        # the majority of cards that do not contain strings or that definitely\n        # do not contain RVKC field-specifiers; it's very much a\n        # micro-optimization but it does make a measurable difference\n        if not rest or rest[0] != \"'\" or rest.find(': ') < 2:\n            return False\n\n        match = self._rvkc_keyword_val_comm_RE.match(rest)\n        if match:\n            self._init_rvkc(keyword, match.group('keyword'),\n                            match.group('rawval'), match.group('val'))\n            return True\n\n    def _init_rvkc(self, keyword, field_specifier, field, value):\n        \"\"\"\n        Sort of addendum to Card.__init__ to set the appropriate internal\n",
+        "returncode": 0,
+        "timestamp": 1785200394.0122304,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_vv0RbYJRBzUWXGhXbcPtr8Mr",
+      "output": "<returncode>0</returncode>\n<output>\n    def comment(self):\n        if self._invalid:\n            raise ValueError(\n                'The comment of invalid/unparseable cards cannot deleted.  '\n                'Either delete this card from the header or replace it.')\n\n        self.comment = ''\n\n    @property\n    def field_specifier(self):\n        \"\"\"\n        The field-specifier of record-valued keyword cards; always `None` on\n        normal cards.\n        \"\"\"\n\n        # Ensure that the keyword exists and has been parsed--the will set the\n        # internal _field_specifier attribute if this is a RVKC.\n        if self.keyword:\n            return self._field_specifier\n        else:\n            return None\n\n    @field_specifier.setter\n    def field_specifier(self, field_specifier):\n        if not field_specifier:\n            raise ValueError('The field-specifier may not be blank in '\n                             'record-valued keyword cards.')\n        elif not self.field_specifier:\n            raise AttributeError('Cannot coerce cards to be record-valued '\n                                 'keyword cards by setting the '\n                                 'field_specifier attribute')\n        elif field_specifier != self.field_specifier:\n            self._field_specifier = field_specifier\n            # The keyword need also be updated\n            keyword = self._keyword.split('.', 1)[0]\n            self._keyword = '.'.join([keyword, field_specifier])\n            self._modified = True\n\n    @field_specifier.deleter\n    def field_specifier(self):\n        raise AttributeError('The field_specifier attribute may not be '\n                             'deleted from record-valued keyword cards.')\n\n    @property\n    def image(self):\n        \"\"\"\n        The card \"image\", that is, the 80 byte character string that represents\n        this card in an actual FITS header.\n        \"\"\"\n\n        if self._image and not self._verified:\n            self.verify('fix+warn')\n        if self._image is None or self._modified:\n            self._image = self._format_image()\n        return self._image\n\n    @property\n    def is_blank(self):\n        \"\"\"\n        `True` if the card is completely blank--that is, it has no keyword,\n        value, or comment.  It appears in the header as 80 spaces.\n\n        Returns `False` otherwise.\n        \"\"\"\n\n        if not self._verified:\n            # The card image has not been parsed yet; compare directly with the\n            # string representation of a blank card\n            return self._image == BLANK_CARD\n\n        # If the keyword, value, and comment are all empty (for self.value\n        # explicitly check that it is a string value, since a blank value is\n        # returned as '')\n        return (not self.keyword and\n                (isinstance(self.value, str) and not self.value) and\n                not self.comment)\n\n    @classmethod\n    def fromstring(cls, image):\n        \"\"\"\n        Construct a `Card` object from a (raw) string. It will pad the string\n        if it is not the length of a card image (80 columns).  If the card\n        image is longer than 80 columns, assume it contains ``CONTINUE``\n        card(s).\n        \"\"\"\n\n        card = cls()\n        card._image = _pad(image)\n        card._verified = False\n        return card\n\n    @classmethod\n    def normalize_keyword(cls, keyword):\n        \"\"\"\n        `classmethod` to convert a keyword value that may contain a\n        field-specifier to uppercase.  The effect is to raise the key to\n        uppercase and leave the field specifier in its original case.\n\n        Parameters\n        ----------\n        keyword : or str\n            A keyword value or a ``keyword.field-specifier`` value\n        \"\"\"\n\n        # Test first for the most common case: a standard FITS keyword provided\n        # in standard all-caps\n        if (len(keyword) <= KEYWORD_LENGTH and\n                cls._keywd_FSC_RE.match(keyword)):\n            return keyword\n\n        # Test if this is a record-valued keyword\n        match = cls._rvkc_keyword_name_RE.match(keyword)\n\n        if match:\n            return '.'.join((match.group('keyword').strip().upper(),\n                             match.group('field_specifier')))\n        elif len(keyword) > 9 and keyword[:9].upper() == 'HIERARCH ':\n            # Remove 'HIERARCH' from HIERARCH keywords; this could lead to\n            # ambiguity if there is actually a keyword card containing\n            # \"HIERARCH HIERARCH\", but shame on you if you do that.\n            return keyword[9:].strip().upper()\n        else:\n            # A normal FITS keyword, but provided in non-standard case\n            return keyword.strip().upper()\n\n    def _check_if_rvkc(self, *args):\n        \"\"\"\n        Determine whether or not the card is a record-valued keyword card.\n\n        If one argument is given, that argument is treated as a full card image\n        and parsed as such.  If two arguments are given, the first is treated\n        as the card keyword (including the field-specifier if the card is\n        intended as a RVKC), and the second as the card value OR the first value\n        can be the base keyword, and the second value the 'field-specifier:\n        value' string.\n\n        If the check passes the ._keyword, ._value, and .field_specifier\n        keywords are set.\n\n        Examples\n        --------\n\n        ::\n\n            self._check_if_rvkc('DP1', 'AXIS.1: 2')\n            self._check_if_rvkc('DP1.AXIS.1', 2)\n            self._check_if_rvkc('DP1     = AXIS.1: 2')\n        \"\"\"\n\n        if not conf.enable_record_valued_keyword_cards:\n            return False\n\n        if len(args) == 1:\n            return self._check_if_rvkc_image(*args)\n        elif len(args) == 2:\n            keyword, value = args\n            if not isinstance(keyword, str):\n                return False\n            if keyword in self._commentary_keywords:\n                return False\n            match = self._rvkc_keyword_name_RE.match(keyword)\n            if match and isinstance(value, (int, float)):\n                self._init_rvkc(match.group('keyword'),\n                                match.group('field_specifier'), None, value)\n                return True\n\n            # Testing for ': ' is a quick way to avoid running the full regular\n            # expression, speeding this up for the majority of cases\n            if isinstance(value, str) and value.find(': ') > 0:\n                match = self._rvkc_field_specifier_val_RE.match(value)\n                if match and self._keywd_FSC_RE.match(keyword):\n                    self._init_rvkc(keyword, match.group('keyword'), value,\n                                    match.group('val'))\n                    return True\n\n    def _check_if_rvkc_image(self, *args):\n        \"\"\"\n        Implements `Card._check_if_rvkc` for the case of an unparsed card\n        image.  If given one argument this is the full intact image.  If given\n        two arguments the card has already been split between keyword and\n        value+comment at the standard value indicator '= '.\n        \"\"\"\n\n        if len(args) == 1:\n            image = args[0]\n            eq_idx = image.find(VALUE_INDICATOR)\n            if eq_idx < 0 or eq_idx > 9:\n                return False\n            keyword = image[:eq_idx]\n            rest = image[eq_idx + VALUE_INDICATOR_LEN:]\n        else:\n            keyword, rest = args\n\n        rest = rest.lstrip()\n\n        # This test allows us to skip running the full regular expression for\n        # the majority of cards that do not contain strings or that definitely\n        # do not contain RVKC field-specifiers; it's very much a\n        # micro-optimization but it does make a measurable difference\n        if not rest or rest[0] != \"'\" or rest.find(': ') < 2:\n            return False\n\n        match = self._rvkc_keyword_val_comm_RE.match(rest)\n        if match:\n            self._init_rvkc(keyword, match.group('keyword'),\n                            match.group('rawval'), match.group('val'))\n            return True\n\n    def _init_rvkc(self, keyword, field_specifier, field, value):\n        \"\"\"\n        Sort of addendum to Card.__init__ to set the appropriate internal\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGE4ZGU1OWIxNjVlNTkzZjAwNmE2N2ZmMGE0MGI0ODE5N2FmMDQwYzc5OTE4NDY1NTE=",
+      "created_at": 1785200394,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a8de59b165e593f006a67ff0b318c8197a7a36ccd3e111625",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_8MsQ_UaHK0AbES06aqb2V14-uRiEa006L1qrkMkSU_tTFrbY3-DgQyTUvZBRC3221O4ukj_WKgm8JPdo6B63dEmzfjwP0XRx6aTZMzFwbrNdyzUxXC1od2w89asweSnBQXVIQCk_x8ggVmvFIPp5VDAghn7tWJIVcm2-UeWVZv8rMz9fVihPvL77eh_9X7_TSMl77kfpgBHl8Xg4PXMihRey6tslTcgb-uigH7yPPqHZFXDXsAgsUYXprs_vV8Pr2RGVrjXARu9OZTxWFILlLAk9JdyvA_nYUPyyEpR9kgC9PGi4hsU4y-KWAQyyjw6VpI1heKu5vPGJUQbJj_apLo5dA43-zT3HBHga4D66sYiwUGqC-c2LlviequTM8U6qWQnyMjpLxGcWAyE4raWYFKOkC0QiMK8EdmPU6N5zH5WXrRw5OAehCLDW9FSSfs2D5LDNMknSMx0Q14I2DFd3F2G_NRMS6npze1M2JXeWmcUZkwN8txP53vmGRJS0kr0A87WmbbqN9yRjINguUu508vPaKhQ08_YQdXKTcuGMOWLgbfUtvOCv1OBaOxMhz1_dhISb2osnvSIGBKGLdAnrYaXDjhJhqvMYfjq-1_TRKt6RQkWuy4-DxRXeWEHH0K_OM2hef4MFUyZ3UhHLKHivMDlMDiT2jzrCKT0vq-p44A05uh16NzA_xSisrb3dkDg1GG9MrKZbvXfUFrJlBG0W-5klvE0tj7xXHtZ2hcTtNKc-2Ngis8XyrHR8mzwEQFeDog3jWVggXQ1PD3X47cmCD8QqfabwGvT50T79RKvquQIX8z4YwTvRw1QOldx-M3bbpg1Nl6VZN8TZbloX_PVT0R4bU05AkEbBvEoDzaN5IMf6FxkjfPOIEOWG8RyOSf7P-SpkD6phYVu4oGUkclLziypNvcbp_umue_nHiNXqL38mQcZPdK7J4-gQ0T6DYEmho5XumJ4vVJzM8upgXHuWTCfvJ8GsZ50c6OBXOC8v42J0ciDPGJvdZyHnlO6kORYE-ZfWpvtkh1KBqqbNA0cK8l5IUn4D8pIz7biXRVZUmIvABMWx4Et86ycJhLU2ddi9sQ"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && grep -R \\\"def _pad\\\" -n astropy/io/fits/card.py astropy/io/fits/header.py astropy/io/fits/* | head\"}",
+          "call_id": "call_DmB3BT91a8Tj3ut9yCIiNHk0",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a8de59b165e593f006a67ff0b7c1081979617c97083ec7ed0",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 6338,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 3584,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 84,
+        "output_tokens_details": {
+          "reasoning_tokens": 28,
+          "text_tokens": null
+        },
+        "total_tokens": 6422,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785200396,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && grep -R \"def _pad\" -n astropy/io/fits/card.py astropy/io/fits/header.py astropy/io/fits/* | head",
+            "tool_call_id": "call_DmB3BT91a8Tj3ut9yCIiNHk0"
+          }
+        ],
+        "cost": 0.0066227,
+        "timestamp": 1785200396.3626041
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "astropy/io/fits/card.py:1269:def _pad(input):\nastropy/io/fits/header.py:2211:def _pad_length(stringlen):\nastropy/io/fits/card.py:1269:def _pad(input):\nastropy/io/fits/header.py:2211:def _pad_length(stringlen):\n",
+        "returncode": 0,
+        "timestamp": 1785200396.5133617,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_DmB3BT91a8Tj3ut9yCIiNHk0",
+      "output": "<returncode>0</returncode>\n<output>\nastropy/io/fits/card.py:1269:def _pad(input):\nastropy/io/fits/header.py:2211:def _pad_length(stringlen):\nastropy/io/fits/card.py:1269:def _pad(input):\nastropy/io/fits/header.py:2211:def _pad_length(stringlen):\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGE4ZGU1OWIxNjVlNTkzZjAwNmE2N2ZmMGNiOTFjODE5N2I5NDdmZWFiYTUzODNjMWU=",
+      "created_at": 1785200396,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '1230,1315p' astropy/io/fits/card.py\"}",
+          "call_id": "call_B3JHvL1RuT5xVPpehNW7rGOm",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a8de59b165e593f006a67ff0d39d481978c7ccefe63d3aebf",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 6512,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 5632,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 40,
+        "output_tokens_details": {
+          "reasoning_tokens": 0,
+          "text_tokens": null
+        },
+        "total_tokens": 6552,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785200397,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '1230,1315p' astropy/io/fits/card.py",
+            "tool_call_id": "call_B3JHvL1RuT5xVPpehNW7rGOm"
+          }
+        ],
+        "cost": 0.0030856,
+        "timestamp": 1785200397.9400692
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "\n    elif isinstance(value, Undefined):\n        return ''\n    else:\n        return ''\n\n\ndef _format_float(value):\n    \"\"\"Format a floating number to make sure it gets the decimal point.\"\"\"\n\n    value_str = '{:.16G}'.format(value)\n    if '.' not in value_str and 'E' not in value_str:\n        value_str += '.0'\n    elif 'E' in value_str:\n        # On some Windows builds of Python (and possibly other platforms?) the\n        # exponent is zero-padded out to, it seems, three digits.  Normalize\n        # the format to pad only to two digits.\n        significand, exponent = value_str.split('E')\n        if exponent[0] in ('+', '-'):\n            sign = exponent[0]\n            exponent = exponent[1:]\n        else:\n            sign = ''\n        value_str = '{}E{}{:02d}'.format(significand, sign, int(exponent))\n\n    # Limit the value string to at most 20 characters.\n    str_len = len(value_str)\n\n    if str_len > 20:\n        idx = value_str.find('E')\n\n        if idx < 0:\n            value_str = value_str[:20]\n        else:\n            value_str = value_str[:20 - (str_len - idx)] + value_str[idx:]\n\n    return value_str\n\n\ndef _pad(input):\n    \"\"\"Pad blank space to the input string to be multiple of 80.\"\"\"\n\n    _len = len(input)\n    if _len == Card.length:\n        return input\n    elif _len > Card.length:\n        strlen = _len % Card.length\n        if strlen == 0:\n            return input\n        else:\n            return input + ' ' * (Card.length - strlen)\n\n    # minimum length is 80\n    else:\n        strlen = _len % Card.length\n        return input + ' ' * (Card.length - strlen)\n",
+        "returncode": 0,
+        "timestamp": 1785200398.063312,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_B3JHvL1RuT5xVPpehNW7rGOm",
+      "output": "<returncode>0</returncode>\n<output>\n\n    elif isinstance(value, Undefined):\n        return ''\n    else:\n        return ''\n\n\ndef _format_float(value):\n    \"\"\"Format a floating number to make sure it gets the decimal point.\"\"\"\n\n    value_str = '{:.16G}'.format(value)\n    if '.' not in value_str and 'E' not in value_str:\n        value_str += '.0'\n    elif 'E' in value_str:\n        # On some Windows builds of Python (and possibly other platforms?) the\n        # exponent is zero-padded out to, it seems, three digits.  Normalize\n        # the format to pad only to two digits.\n        significand, exponent = value_str.split('E')\n        if exponent[0] in ('+', '-'):\n            sign = exponent[0]\n            exponent = exponent[1:]\n        else:\n            sign = ''\n        value_str = '{}E{}{:02d}'.format(significand, sign, int(exponent))\n\n    # Limit the value string to at most 20 characters.\n    str_len = len(value_str)\n\n    if str_len > 20:\n        idx = value_str.find('E')\n\n        if idx < 0:\n            value_str = value_str[:20]\n        else:\n            value_str = value_str[:20 - (str_len - idx)] + value_str[idx:]\n\n    return value_str\n\n\ndef _pad(input):\n    \"\"\"Pad blank space to the input string to be multiple of 80.\"\"\"\n\n    _len = len(input)\n    if _len == Card.length:\n        return input\n    elif _len > Card.length:\n        strlen = _len % Card.length\n        if strlen == 0:\n            return input\n        else:\n            return input + ' ' * (Card.length - strlen)\n\n    # minimum length is 80\n    else:\n        strlen = _len % Card.length\n        return input + ' ' * (Card.length - strlen)\n</output>"
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGE4ZGU1OWIxNjVlNTkzZjAwNmE2N2ZmMGU0Y2U4ODE5Nzg1NTIwNzVhZmViYzQ0YzY=",
+      "created_at": 1785200398,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a8de59b165e593f006a67ff0eb61481978873b7497806e642",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_8ToNeKHxNeAzUsg82vbnLIDcm06H5N7qBEOjopnB0ROIDR1jlDDlfK9YX12I9MKX19ERV4LzGSTbIT73RTD_GTgJN1FjUvnsS-UKtn6BDfnoaHtn-BCLzdBbsvpOpCsI17W4bTuJLeO6DFDByTkaQF7Ie_CYAD_jbI_Tv7j3QBaAoGjxiZXIY8-ofkYP9rNZBTBqQ8vipd2m6IyKxeSaMJ1p_qHS32yR3jeH_3US1LY6E067_zuSnSVrX6JE_4BVKlHMgd5iXYPMKDL8s8e34whoZ3X_dztSIlAcTpy5ob01ZGlEw-_z-HTG89rv7jXBOLUs1qQHm0sN_XhwMibs_sjM7drzMj-pmdkBjwx9K7Oh05WvEmL1DQoFUT4z95BGMmTwgft1PgX6rdlEGu7stbL3t3-0Ff9m7kUgrmXQoZJeb4hNTH5awzmmlWWL1JmXMynSEHl_QntVShmCx1ps0MBtEiUgptLL_EeH3ss9tS2JPAYFg-AqE3P_2uP6YnHkpahP8418FdkepyWD7kjWrV-o0ep9bDba_04Zj3ZlScvHf-X_laFXayrn2iCXGX8yRJYTRyPwR8g_8M1idr8K5RDPSda8IzMzs-bReF26HP9AvtALnsCP-F-9BFIAeNmZ9fExHL1t2rondKn_JVyibe42jG3sB7Ut00svbsmtDZlK0CnH1abtKFW1WLu0VtnyJ4H6XgrVyIdEUWdBNPuo7I1TsRzhHp4iOInKlCNPZCbymDjIceo-xbgzLROT6qfxmBv1LPeT4ZaiRZi_QYCnZpvE3LiKSFu8DlKHTiZEYDWysms8Ai7mIp5PlV5ZxyjzUbABeMuAST0DcnfGWhZ-bO-o3S-7wTCtS5-LTMX8kozNNKH8BnWZpDgryMqEx7YSquSmuOIWUVdDBuQ7v2iBN2bGir5rI64rCftbhzWTZL3gXCQwNBMRZwAXoyWweSjmUgJnZrpP9OKuQ8sV9odoQri44_4j7O5DpXQTwCgTyO6KKKucchH1osGYvancuVD4iR8TvWzaAMLj17Q4CtGU6yY8RkapJ0hH55KmwLdJ7G_yl38G7ETsOlFzibpv8SjUV8MIiYkga-ECwJEMhPSo-PK4qCauQ5q4yf28MmdmNT7FjunLWZmDeIX9580zOUemfHv0JKt7fa4efzHq8_Dlxg71tTbi8L-JEBQXDGjAFI2CXzjmqJhwaoJivgPNClzgzQmUp6oo_To_sjlNXHVXAsoWBrVb-r70Fazej-BUtX2deEkm0_8EsBNAMVTsR1SMmV3d6PI5_JZWC7Nn_hogztFiiCShhJyTr5MmiCNeuwf3RM4zXlvtqOwWWPn8jddFEp5k5jaLpnBvIaiOaUjbZHRlzd5JTNOJqlWuqnVf5tg0GdUh_v9W72fo2e9IfNH_N1OdAD-W_UT_gbBjji5qJD5HsjNPxHhUvaR7l_wKJanAbnJArvZ0EP6eUQEeI9pOA0jQu0A1An1iHbtgrjYEmU1YuPfaVIfDGhUs6JN33C7w0Gqtf25Fj3BdVW17If058tjxIKf909_qm_8q24z5cXlolIUkbZYHRvmBy9YSprX60o_dRi5ixhIr57Qg6MhdQHygIsPKXq0yhn7GF72akeTMl8kQqdrYVmJ5YN-EutR04TlJz6fQXbYyqZJR6qY8pF-C-Y7X1DcFuTTfdcVWxpEC-DW8mb4e1F2cz79cdzcWehrKzKQGvJvCfwUd_a1lQ6BWjvVghxSKbbpdJ0EdpZUn4Q6keJq5ZGkms3wFKbo8fwRJnqDbaOWfhEWgUfDx6c1Hc223_0tNwxtW3QjKA434cVTKmb2s_APHGZS2z_OXjhPso8UHZPqqp6wjS7xC7mFtz_LmZdF8Ze-tU25rGTZuR42QhhvYdGwl3nIoaBQdOmRlFbkH4jvxqq_MaxZ713wjF-20oENKs3hr51BlxazOU3LE-KK0rmyhzxgCyzv4LXFYYZVE_Qc_XizhLSjooIqmVvl4U9-Be2emd8_Iqa4Vdm0gpyvCxFeKkyDnSsS_c9GzPbD3Uy--Us3kXuhKawWbFTgJesoKot4pZJ0XVRmE0og8YOtzfKN7jM-u_FC_ef3v4_9w7KP2gxjJedQzPMJmhfXupxmp5KlIwdkoQXFxZ40rxKtiP36eZkemQBWGJPXSrMe8EuiiWEiQ9uLFlI4M66UE_22zQZoWGrW_KKQWXzkiC0sjrwpR5bzSkEaihZzZqpn2D1d6CQF5JH5u1so7eQL0t202te2m8KzwINmSA9SEBeVYyYYYyDvN9rMPw9R7ZU4PqBax4G1XP47lc7wYQrBsoLKeYEuQDMaRRRl7PiDeoRMkXmuHzWhxqJclSH34R-sDfq2RgMTK3uuCqS6fxOb_QxY_Fdte7wB1GksX4-OPa8qlW-aIvgN3I3FlBUvAscy94qvzwtep03PR3HyKqESiw5uhlDRIMKGEOq2MVJVFuZZAagiGs4hUOEtpBEJKBdyFbyvN0EFSZn68mEVipr6gCLwgFbJM_etMP7bIXVRjOhgfFZE6zA2lb_-KFuD3v5QmOfLeir8NvJrtPU6hYwLOM-dsjYICADhvsqJgfGWIArH6sk-Ic_etTTaybjwWjoY3MH6Zc-NAbCkM1EZyo5Dnu3ozxP8fP_wQE5Y_4RjgPlaKd3ExZG3SsvkdojDWBPe_MP3gGefK_upvi4LUOkRmFSmDXUaJ6eohpMNs4IwRYm01JC1VwmSMSzFtkTfeJusvXACYy0VCSwgOxtHgi_UbSsfA1l2TUVberj3A-CjZI4ZEv7sygY5pgTjkMkVZYdXrKlVsSCCd78A5ECCn304uLLZRV7MUPKtOWnHXUOTTC17fNZsM881YSE-3QAz_h6NmNAFRqqDJAwegHVQxKTuCofWmtMsnI2kUCO8YWc8udUG3IKD2M_PqzkPEbZn-0bog-HAKzqKhLC68uqYykiI6UpO3WenAshZ27PzKU6waAS-ahFweQ-_DB184bCNUl9qQb--hR9EgImd-A-E5sOMglc_zQ42fuYHOjwYndzTHZzNhbcGpuMYmdzg8ChXonFtntopBSFi52EzheuIqVWm1MnOw3JIagtaZ1AcXCnidsEASi7IEzIebM6lex3qq1II2G-6wqwZ4GOYXNkeyM64An6yWBPYymJ2YVh05-DNZDoloTd961BQdAeyqTXAZOhldhNZWi6-akmEA1OPM6-KgFQWfShMx3FP44b1RlYETfvHYGoui5PAza2jZqjSg4KLg2Bah6Fqg-Miut69C858IPC5zB1s_VFBG3bZ7HZVuwpHwlg_cRmVurkTTFaTebRXvl2MxjdvywWtaXxkJJwwZmwOsf28gBScMdELA=="
+        },
+        {
+          "id": "msg_0a8de59b165e593f006a67ff129410819787518eccde460383",
+          "content": [
+            {
+              "annotations": [],
+              "text": "I\u2019ll also inspect HDU-level `fromstring` callers to ensure any fix stays consistent across entry points.",
+              "type": "output_text",
+              "logprobs": []
+            }
+          ],
+          "role": "assistant",
+          "status": "completed",
+          "type": "message",
+          "phase": "commentary"
+        },
+        {
+          "arguments": "{\"command\":\"cd /testbed && sed -n '200,340p' astropy/io/fits/hdu/base.py\"}",
+          "call_id": "call_9LGsm17iedYS0SUICvUgzGM0",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a8de59b165e593f006a67ff12d4ec8197a86a65b9f203e48d",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 6971,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 5632,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 471,
+        "output_tokens_details": {
+          "reasoning_tokens": 400,
+          "text_tokens": null
+        },
+        "total_tokens": 7442,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785200403,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cd /testbed && sed -n '200,340p' astropy/io/fits/hdu/base.py",
+            "tool_call_id": "call_9LGsm17iedYS0SUICvUgzGM0"
+          }
+        ],
+        "cost": 0.00992285,
+        "timestamp": 1785200403.3908262
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "            self._header['EXTVER'] = value\n        else:\n            self._header['EXTVER'] = (value, 'extension value')\n\n    @property\n    def level(self):\n        return self._header.get('EXTLEVEL', 1)\n\n    @level.setter\n    def level(self, value):\n        if not _is_int(value):\n            raise TypeError(\"'level' attribute must be an integer\")\n        if 'EXTLEVEL' in self._header:\n            self._header['EXTLEVEL'] = value\n        else:\n            self._header['EXTLEVEL'] = (value, 'extension level')\n\n    @property\n    def is_image(self):\n        return (\n            self.name == 'PRIMARY' or\n            ('XTENSION' in self._header and\n             (self._header['XTENSION'] == 'IMAGE' or\n              (self._header['XTENSION'] == 'BINTABLE' and\n               'ZIMAGE' in self._header and self._header['ZIMAGE'] is True))))\n\n    @property\n    def _data_loaded(self):\n        return ('data' in self.__dict__ and self.data is not DELAYED)\n\n    @property\n    def _has_data(self):\n        return self._data_loaded and self.data is not None\n\n    @classmethod\n    def register_hdu(cls, hducls):\n        cls._hdu_registry.add(hducls)\n\n    @classmethod\n    def unregister_hdu(cls, hducls):\n        if hducls in cls._hdu_registry:\n            cls._hdu_registry.remove(hducls)\n\n    @classmethod\n    def match_header(cls, header):\n        raise NotImplementedError\n\n    @classmethod\n    def fromstring(cls, data, checksum=False, ignore_missing_end=False,\n                   **kwargs):\n        \"\"\"\n        Creates a new HDU object of the appropriate type from a string\n        containing the HDU's entire header and, optionally, its data.\n\n        Note: When creating a new HDU from a string without a backing file\n        object, the data of that HDU may be read-only.  It depends on whether\n        the underlying string was an immutable Python str/bytes object, or some\n        kind of read-write memory buffer such as a `memoryview`.\n\n        Parameters\n        ----------\n        data : str, bytearray, memoryview, ndarray\n           A byte string containing the HDU's header and data.\n\n        checksum : bool, optional\n           Check the HDU's checksum and/or datasum.\n\n        ignore_missing_end : bool, optional\n           Ignore a missing end card in the header data.  Note that without the\n           end card the end of the header may be ambiguous and resulted in a\n           corrupt HDU.  In this case the assumption is that the first 2880\n           block that does not begin with valid FITS header data is the\n           beginning of the data.\n\n        kwargs : optional\n           May consist of additional keyword arguments specific to an HDU\n           type--these correspond to keywords recognized by the constructors of\n           different HDU classes such as `PrimaryHDU`, `ImageHDU`, or\n           `BinTableHDU`.  Any unrecognized keyword arguments are simply\n           ignored.\n        \"\"\"\n\n        return cls._readfrom_internal(data, checksum=checksum,\n                                      ignore_missing_end=ignore_missing_end,\n                                      **kwargs)\n\n    @classmethod\n    def readfrom(cls, fileobj, checksum=False, ignore_missing_end=False,\n                 **kwargs):\n        \"\"\"\n        Read the HDU from a file.  Normally an HDU should be opened with\n        :func:`open` which reads the entire HDU list in a FITS file.  But this\n        method is still provided for symmetry with :func:`writeto`.\n\n        Parameters\n        ----------\n        fileobj : file object or file-like object\n            Input FITS file.  The file's seek pointer is assumed to be at the\n            beginning of the HDU.\n\n        checksum : bool\n            If `True`, verifies that both ``DATASUM`` and ``CHECKSUM`` card\n            values (when present in the HDU header) match the header and data\n            of all HDU's in the file.\n\n        ignore_missing_end : bool\n            Do not issue an exception when opening a file that is missing an\n            ``END`` card in the last header.\n        \"\"\"\n\n        # TODO: Figure out a way to make it possible for the _File\n        # constructor to be a noop if the argument is already a _File\n        if not isinstance(fileobj, _File):\n            fileobj = _File(fileobj)\n\n        hdu = cls._readfrom_internal(fileobj, checksum=checksum,\n                                     ignore_missing_end=ignore_missing_end,\n                                     **kwargs)\n\n        # If the checksum had to be checked the data may have already been read\n        # from the file, in which case we don't want to seek relative\n        fileobj.seek(hdu._data_offset + hdu._data_size, os.SEEK_SET)\n        return hdu\n\n    @deprecated_renamed_argument('clobber', 'overwrite', '2.0')\n    def writeto(self, name, output_verify='exception', overwrite=False,\n                checksum=False):\n        \"\"\"\n        Write the HDU to a new file. This is a convenience method to\n        provide a user easier output interface if only one HDU needs\n        to be written to a file.\n\n        Parameters\n        ----------\n        name : file path, file object or file-like object\n            Output FITS file.  If the file object is already opened, it must\n            be opened in a writeable mode.\n\n        output_verify : str\n            Output verification option.  Must be one of ``\"fix\"``,\n            ``\"silentfix\"``, ``\"ignore\"``, ``\"warn\"``, or\n",
+        "returncode": 0,
+        "timestamp": 1785200403.5247052,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_9LGsm17iedYS0SUICvUgzGM0",
+      "output": "<returncode>0</returncode>\n<output>\n            self._header['EXTVER'] = value\n        else:\n            self._header['EXTVER'] = (value, 'extension value')\n\n    @property\n    def level(self):\n        return self._header.get('EXTLEVEL', 1)\n\n    @level.setter\n    def level(self, value):\n        if not _is_int(value):\n            raise TypeError(\"'level' attribute must be an integer\")\n        if 'EXTLEVEL' in self._header:\n            self._header['EXTLEVEL'] = value\n        else:\n            self._header['EXTLEVEL'] = (value, 'extension level')\n\n    @property\n    def is_image(self):\n        return (\n            self.name == 'PRIMARY' or\n            ('XTENSION' in self._header and\n             (self._header['XTENSION'] == 'IMAGE' or\n              (self._header['XTENSION'] == 'BINTABLE' and\n               'ZIMAGE' in self._header and self._header['ZIMAGE'] is True))))\n\n    @property\n    def _data_loaded(self):\n        return ('data' in self.__dict__ and self.data is not DELAYED)\n\n    @property\n    def _has_data(self):\n        return self._data_loaded and self.data is not None\n\n    @classmethod\n    def register_hdu(cls, hducls):\n        cls._hdu_registry.add(hducls)\n\n    @classmethod\n    def unregister_hdu(cls, hducls):\n        if hducls in cls._hdu_registry:\n            cls._hdu_registry.remove(hducls)\n\n    @classmethod\n    def match_header(cls, header):\n        raise NotImplementedError\n\n    @classmethod\n    def fromstring(cls, data, checksum=False, ignore_missing_end=False,\n                   **kwargs):\n        \"\"\"\n        Creates a new HDU object of the appropriate type from a string\n        containing the HDU's entire header and, optionally, its data.\n\n        Note: When creating a new HDU from a string without a backing file\n        object, the data of that HDU may be read-only.  It depends on whether\n        the underlying string was an immutable Python str/bytes object, or some\n        kind of read-write memory buffer such as a `memoryview`.\n\n        Parameters\n        ----------\n        data : str, bytearray, memoryview, ndarray\n           A byte string containing the HDU's header and data.\n\n        checksum : bool, optional\n           Check the HDU's checksum and/or datasum.\n\n        ignore_missing_end : bool, optional\n           Ignore a missing end card in the header data.  Note that without the\n           end card the end of the header may be ambiguous and resulted in a\n           corrupt HDU.  In this case the assumption is that the first 2880\n           block that does not begin with valid FITS header data is the\n           beginning of the data.\n\n        kwargs : optional\n           May consist of additional keyword arguments specific to an HDU\n           type--these correspond to keywords recognized by the constructors of\n           different HDU classes such as `PrimaryHDU`, `ImageHDU`, or\n           `BinTableHDU`.  Any unrecognized keyword arguments are simply\n           ignored.\n        \"\"\"\n\n        return cls._readfrom_internal(data, checksum=checksum,\n                                      ignore_missing_end=ignore_missing_end,\n                                      **kwargs)\n\n    @classmethod\n    def readfrom(cls, fileobj, checksum=False, ignore_missing_end=False,\n                 **kwargs):\n        \"\"\"\n        Read the HDU from a file.  Normally an HDU should be opened with\n        :func:`open` which reads the entire HDU list in a FITS file.  But this\n        method is still provided for symmetry with :func:`writeto`.\n\n        Parameters\n        ----------\n        fileobj : file object or file-like object\n            Input FITS file.  The file's seek pointer is assumed to be at the\n            beginning of the HDU.\n\n        checksum : bool\n            If `True`, verifies that both ``DATASUM`` and ``CHECKSUM`` card\n            values (when present in the HDU header) match the header and data\n            of all HDU's in the file.\n\n        ignore_missing_end : bool\n            Do not issue an exception when opening a file that is missing an\n            ``END`` card in the last header.\n        \"\"\"\n\n        # TODO: Figure out a way to make it possible for the _File\n        # constructor to be a noop if the argument is already a _File\n        if not isinstance(fileobj, _File):\n            fileobj = _File(fileobj)\n\n        hdu = cls._readfrom_internal(fileobj, checksum=checksum,\n                                     ignore_missing_end=ignore_missing_end,\n                                     **kwargs)\n\n        # If the checksum had to be checked the data may have already been read\n        # from the file, in which case we don't want to seek relative\n        fileobj.seek(hdu._data_offset + hdu._data_size, os.SEEK_SET)\n        return hdu\n\n    @deprecated_renamed_argument('clobber', 'overwrite', '2.0')\n    def writeto(self, name, output_verify='exception', overwrite=False,\n                checksum=False):\n        \"\"\"\n        Write the HDU to a new file. This is a convenience method to\n        provide a user easier output interface if only one HDU needs\n        to be written to a file.\n\n        Parameters\n        ----------\n        name : file path, file object or file-like object\n            Output FITS file.  If the file object is already opened, it must\n            be opened in a writeable mode.\n\n        output_verify : str\n            Output verification option.  Must be one of ``\"fix\"``,\n            ``\"silentfix\"``, ``\"ignore\"``, ``\"warn\"``, or\n</output>"
+    },
+    {
+      "role": "user",
+      "content": "STOP INVESTIGATING \u2014 you have enough information now. Your NEXT response must issue exactly ONE command: write your COMPLETE implementation plan to /plan.md using the heredoc form (cat > /plan.md <<'PLAN_EOF' ... PLAN_EOF). Name specific files, functions, and concrete edits, specific enough to implement without re-investigating. Do not run any other command."
+    },
+    {
+      "id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDpOb25lO3Jlc3BvbnNlX2lkOnJlc3BfMGE4ZGU1OWIxNjVlNTkzZjAwNmE2N2ZmMTNkMTFjODE5NzkzNzI0NjZkNjg5ZDVmZmQ=",
+      "created_at": 1785200403,
+      "error": null,
+      "incomplete_details": null,
+      "instructions": null,
+      "metadata": {},
+      "model": "gpt-5.3-codex",
+      "object": "response",
+      "output": [
+        {
+          "id": "rs_0a8de59b165e593f006a67ff149e9881978e249c7f3e6725e6",
+          "summary": [],
+          "type": "reasoning",
+          "content": [],
+          "encrypted_content": "gAAAAABqZ_8l7rqrjbOMvEkntyL19UT5M0vzWBW_KHpn7XdSonFfsHLgU4qw6t7f3tJ_Sk00Xk0B8ko9KeMwo19iTG2VRXYTR4SWOpLXBO-52xn4-RLftvTTCKZGaEqj0Zw_KwK34ZlHu9ZNAiCLNeN8sL0Ot_ZnKxQwp_a6Om3XJbXCuv0fpqXv99dvazeAZPRLyjCbAHLtpDvpdKbYg_at5EUr_CjEZ8OAokIzss83sxCtAAORjzMn4FbQHkkdxMR5JHF3Sc7Mxj5lK8lVO48powkN5QNjS0L39rYFTmutQspzp8Lu4FoRG1pmfB98vmQ5mA0TNICuXG-bNBYDxroX-y7xSnCWOEtmhivB6-hwv1k0SAna5TSLL7MABfMopmcwwmQRlxMUJqusyZxOVWGEc3XYzjCHKdh9B1CEcd6USDNuY2gf1sc55vOg_QFp-IOvBuRFhq5zm90S9Cxh48Icw1_fN9__bQd5AWrclY6WzQ2VfmHxowC2VKSYByydzMRcJuta4fJMO-YmFsivCJtvrLapr6lghu_dYd_BoO-fnebEqSQ6Av1iS3m84Ty9P8Gy671xMstopwwAY18gpqcgR0Msk8I9j7G0OjbvaShGuk2jbwC9iOVe-DLyGRIsqprVhySK-ABhzeGrZPxDMOD_4xqeF0tH0hyiaITTx_Z5-8iXxDrIdNtXr0QNJTY1sCxSUhcELmasXrVxR9nLNtjD9rNzCz0ppE7GKNG93FJ4E-iYyAh11WeE7AxNBoxiwhSErianl48uDGFCkWP3j_ey_MM10KgrDoRsEgNmNTpvzqYvV2lLc1nQOaaGCT_mRf4x6TkpZqk_VGMrJze8zJcu2Imfg5ZtnriXtwQlWAastFBVdMLXF-BvHELVii1UpjF_PCVKj3ZE7VmliCPk_zXBgrVaM5VPMX7Qo7OR4jHoK63ZJfHm11BhXS0HxqnHlVT9fr1_wMmDY0quFoUCCQBj47KGSH-y0vKAdoIJWwq6Y0yrZVavOfVkmLLVWKxnajmWtAtAsAxhSTADELovDxsJhIodgYa0_Rvp49NpaevYEQuDl0yGwVQ4Zz4Y7ww_l5hK3fgtCCIWE88J4ClK_rVT0K9sFkQf1My5HsYV5qj6JVkiRJwDkFaka9MPaKwgTGl452xaWnuUiTrCb3x2PzJzj6XGABsL3c3d8Gj3vMPgHG5-J0_-l9L3dq2AfnYuti0DK2OUwDb5BHpj80YKFLj3aQQmk_1DxnbVKMR4d--gmMMpPDQ9lkWFndDs-na-V4tCByzioOGcprKwFu4HwSwWqP0wnqZcIcbpIjkpYlr0LjJ95NaZPwBbpHv_ByGasVlfF1N1HnBT5lVVa1vT6Urovkm3rwTdlJS4bC3v3lrF2V3Z0rBufIfU0z7HewYMVO1RncgX2hgJeJmy0JYPQd1m9zqMo1mbaphSEX274cLRHySznINeswyHA_lU5TYbR90WgLQxGLu_Z94ZWdyRvDKTHNYrWx8m1YWomETOc8pBSXg5lzFinz-oFGSUixe-TaDbBQifcni4EkMMg81FYzvDf9B91Es5kMFXVdkEvyqNCmOap4F3U8B6QgG7H_dnCTZBccFxAmF4bovKWbSQLG4Xkl_CcQw1Qr20kOaeX1wxZvrwz52HVMqjiht0HtzsuB2A1Octn3_jM_ElVTNnu2uuZk7rD9fWJLYBUbqMXXHUH3Hk1Fd6tRPtn-kWnboVgnUEtHYjzK5hz5sr7gQQeGmKdmuSMWsbXtgPuSTdY8eqydIDMw5-lhxAUJQTiB6m3jHRmXyZuhwYjRqDBSD1yWELOpHWT82B8jS-oLsymAQmAHp3-c5yShb33_jgkaQB0mXw65ucB8Jilnnon3aXaRC6eth6NGpaVGY44l97Qj5JjlVtNtltdNUbVUFPflEcdmm8sMIdyCodbUtA6ZEEpEFeIaoaGAAY9gYgl9YcB2nCPWHJp6LFYqFq81jEpy-AZlzAJxbTxFsZwQgOJyPDNZtooDSV3NDjwKuTpSDu70yHcwlXRnzi3RlO1Y4MSzuLJsZMxg3aS8EnQuhVSBR3Vyyy6d6U_1CqcjZsO6cm-lx3H61HdaNiEtCHCKOq9xhzYEjkhfJErH9Jzw7jk1s8zJFutbHxQyBRZBnx0G7Hxz5076KbrsdtjMRNSG0SRJ7y4phGShXvHzU8lh0qlUmIoTOX7PFdFTVmUsX57Cryvjq-szy6n5YTh_SlFS13wfW0mBMxkUqwHIZDa1CGYstcg1ruR4thxXhgYcgHGkqwNpUXkBPcL1OpXQEPVJi2z8o4zO-ZYrB6jr3zcY3TTduPowET6YP_vE8Rai0LwT5j8cmrsP7KLWOySWNJ1picHFCGa-J5tVG0kR6zsIS6xKeY7I-BsYipyPvmzdR3K4CLwXSVlgIEdgYaAZ4tixsyduU7tHnEMEBMbfrrTWSD4Lf-1yUMrU_4k48iy1JRs6JFFnuX1c8eNpbQh5f2Q8YsP0MjsZVTke2sxjqcf7CKdGFLdzJUyvKhuTA6mJJXONcODJxGvPeOa5IqdTggoa78xmj9V7GgwZX89H2POZinbaQ-FcoM5u9V4CxxNQpVwOvoAPuILonbC-dAXEq9079JiiFxjdwvUtyfWEMnWrDdxauN8V-neDnljFo1nX0D1YVRILXBga4tpLCA_JEoAMFM_nwh1CrTtpsa8akS9jKKxwpvNVOrSAhJqFSJElCqSH8nHHxuFPbbcRV1uS-qoLHB-ckGWDnnVpC2SBLD99LcBVdk3XS0PYuneiGYgaNvk7XLeL0mShpVyZTl_srt-IJqCGtNGJBDAjmoEBBOhJREUuQzaJup76qSJh3BK5X31pkiNsQ50C64FgASpvmZgrMrcjiASw38dOKY_CfR65-fFJCdwVopDvepzAEvk6C_6XHaQgv07Hf0gzem49jVzHJIn11OMvJicxZstTmUu99E8r70LdOFLXn9JxwNKFcVaNU9j95ssPCDh5jU3TFaTMe9RJr1FqSEYoxm9DE998zewUzzHLKMVGcW3fsH1XHxQcpi9wZ_HLM6GAddpFMxTAojznZuIqeyj7qApxtbt8LKCJYXaPioqVa4q-RRG5vSb7YOEARUzPXzTBbn3c5zM0QTPmyxAy3grDFnplNFPLRkKJD_2-griTWEef4Y9vJaL-6vfh0hPPMXImlsUrrf21CIdyJe69XQlHNoDv7GJF6jGm65nStHbadzSGHRNxO2EoeiP3ST9r3RP1s0gkY1e1gqESU7AevOSP7xpNhimVTTZ9r_Y8iPs1HwQQI8y9UEFEZiyusWc-cA3q3N8HAxNU9d-AyCuyb3gSW1qIG6kHDDzldZkOZA0Jw-P3tpd2eBbnVuM0GQLceTD4GeP94talbRPnIlxURAoM-fN_dYFCXCzF-Us7NDx77Hwv9oxPJm8E4Q_aN81HGHBDXC5wDLJGQGZknHUKw3D6bjenqQq_NQZfFUsDpN49bCiLKVg1-ME3bRIs00e7BZykidk3hJ_hNsOUaTvPWRuhl_tc5nMfr1HikFijIrf3b0mzKdWhVFqJlC-ftEyCIMnTkG40A0rfWPb0NfPromzudFwrP-irEAOA7tWnmFWFM6dUXrc5KZZXGZfFxQs_2M6ajr1hHn5AcuxZxwmOSqJJ3g_TE4rAfyEYOnAmJjIGBGo7MP5ma2hKSD5D1m5tSk2ecZJbJz2DZHx7DXjCigxwXsveeKWYg-uz9Y4wCucIy7Diii-cVsKrzE4KWCP5mD_nQ4FJW_HiSI4h9G96MpwnCteiHThHQ-NJrjY7b3JePuriQ1LVvpPR5QD624FfaxR2xXEEeUiCtXAF-Kugtdc76pPp5HGGwKCory4mWUOIkiwvfSEZpZhS4kKHWdBK-GFcI_PmAJBf8bYeyNoi_Ft1rpK8QsqfmCz3l8_J9Lv_AgssnhZq1o-VCWFr9vwF0X6LpkBZSfL3vdsBegaOY8_og1EhmjAjidW9ZZVMAJMGj5AuW6AD7cotiCAgvv_lOWAdp8gUbx-gAq0EUPoKsAuc2nTj2yHfX-2oXaNVh1zRDueMBPWx2U_-kUx9NMMAcgzJASrfkXNvX1sshOU93HASAdyyTcYs4kJidBYynzZabcBYfjW-u0oHdoTSEHUp-CGsRIviSQy9-HX6w_0iJHoNrOlAqr2-lY_tuJqM9d8JJG5E6pVqkNk0cm-JFkKh81WDocbcLDOZDp5LSjRPORvYqKc2OZw_xAHPcmhWdMPgnR9J3O5QKSnmRJhG7Mg4uTFK0v3TN5xBBxsCCi9r5wggS1Es7cYFgmxi0NoWLovRQtvJHo_Z2OLgMqg4SamiLGB1tYgArW3nRPbSww6L6oLZo8a7PWhk0AQPxJvTmqnJqEWUsFnnNSZuQeiB54jBoYcJyeg35QQK6abZ6WtjL5uPTCZ9L0Iy3OwFskejjVRsmnI4q70Wj_c4_XL2zr0LNcjztB47F2YHwjgkyZOne8JwcBLIsnrPiX4UfCK78y3wHRZeLH_xkbV5gfc871xVifFbHZcfB0I9A0TN6gBstCQAdpuFLswyhLi74Vd7JwbQ5FgSSUWAEK0ExWFM61x90WZDyayFptF1-rS8pyN5betxAabZHjaFhseHIxVnUct3wwz09LluRwvpYrO6Ie4k9I8ejIyQ_NHWIGBTEwtWuCI5NGv_SJTYmhSCN2j72gJKN3TRL6dP92oFiZZC9PgWxZMljBfM8CRLI88Sas87L66WGdhiA-6Xc4FjFHnBuOmb0tptgLQnYcdirKpGA1vjiI3Heb7-ohBlkm7XsgGJGPb_HzkPVBYZ0nB6FbLbOEt8t8Yo7QdWj3ib0v7GJCjqPte11FOv-ZFXtP2nHJFLJPbjmDsjbcWgpILncOI0MTaKbQ3atJ1xuaykAumRplt05LGfzcjUtVmU6q0hNYLBlUrCubiX-neoTc8E-zZv0EvvztE3yh3_mYkWvC9DeMcCRtoDGYMDh5hi8d95tLGEyyWv0urbrYns6cd8et1SwIrUPf4H4hFP3-vxEqWVysw9YSWpNgwBNM-JXiyviN4gVbI08HlybhfvXokM6KVLX7JQ5ZHkHsSzMcH0hM7SZBu0N3ptQ6uvvYFeGx4mHNrz0THUdEtQCQNhCCAXyOZNKGlYnzhrk-h3GZso1dcbDSd-ztqCLc83jB7_KrmCegXzNZp06C_nIZ5Npc-K5kOV3ZhxtAwHjNR5PUk33y2D_cWz00oVPeTZoB3UMf-VQWS45xX44j7f3XKrlwaR3KoMXCa6kovW2e1Fyl-cYDGX5OYH000Ml6t0UGvSe_UGOFCXB4cFqPqdLNE0INy5cAwfGMVc4p3QjOGQdl3t6_eGPTi9RI2LDgxinoRNv-rQL6sIun38CH-FxQ1bubsYKlvcGEqB3mpvQg7unzic3UN1exQaTQ4qRNDuyfAvkGHBdhNJICbtp9s1CD_8McfMpk5FARdFBJw-g8OyoH8rXoP8WIFpx1VOoYGRvqv-UHN8-AXaesx_r8C9pVBBpIdNA3p_JkgaPweS3nR-ecgiuW9aBKNTKhZKem5GpavzgmqhOy2wlitY9kGie1RU4NoMOUj2v4T0MrDrDA7uSrbDPhsEccgswjxY9sXrFBqmtgB6onDPjJln__Yx1sOvY42dAxbPVsInH3YQVGT6U3UEZqIk1uqRUikqmvEDRIwXHCrpYXzyVYzZkrgRUlRPy7XB321DgIvJstYkvI1EhWiif2o7Fj3y2v4JhCRj6NTXnhxlFGxaVbn7W_EWE7SBZtmaYn4ZB59Kw_7rkvvt0iTwfrpRDCU7BpVvaWyl6qhOqBOlxZ4V6zYjth-GmdMx5qmIF7NaUMvUAvR9BEqciFaVgl16BIRORq5OgqS7WIb0lP72-6G_z7JHIljE8jbZU-1U3Ne6gxvLH-jzwDfHjZUXK_pPGbKqSk9OhrZG1eqPoUD83oVWWAJL50HsSIB8oGZjnR1H52Nepv_wYuUufXua-WY_7uB_nrOpiy9kxk-8OLCjdAlPMd9q9hIEOLFBqHWJxyZBOXnGdxfC787OTkEGcL9-k8AYaemdYkhBmgXLCjnMkEHaKiDhEVs8RJAT8oemfYYH5OvwesNDyXDLuwnFam69KH4SxQG6kEiBm8ZoyJRfZhPlnHIVsT641UeURccSxcxqiigP4Zb4vOXgbs0QBtLYaWxJfhPun31_-VgDGpRZAOsbZxRcsOLCjcsCkm8Irb-b83KA5aXzb0oqLWmachEujTPs-D4ZyTV1dcxhaf0s-Qzy-vUasi7hKU9JEVETMjHx7-9FDs5sbIUuSBtFbDGZfCOabCfMFUXCx2ADs_Xwafkt7dH5VQMVqF2zg0siiQsRj2OCiHphkMzKHYeSl7mgpRKyQVroqL9uve7ZJukF5-_UzVYhnjMXEavqODimlQUZP3pCF4CBbAmJqtftwnzAUgRN2oNgXS3d8unMeyKqiXK9LspZy7FMN4jl3jCXSiA9uZZfc1Mkh78mz0sWrMGbdOQ85fRsILFEDdseA4mKg4_yMkxM9jvmVA0KFFEdpqDXQskQF_StDl0jy5gsNYJi_LsO0DTTOKcb68dGnMY9CVsaDoANCRuIy91XHukBpLLzvHJQeW5WzjIzewCngkbVsjARlWAqBVeOJlPo7EjGgvVaeZyljoWBVC9Fy_6uiPwVvIGWD2VkpuJkHFQco-4jRvzu9aYs1T3zlzxPlg_XIShWj8bw8A9h18e8eeWOr45VFE_rB_Y_Kb1XukrJSOR80q7ND7jZyXQ4NyEbuKKUjnwlONf6TDywaagSV2bWrpR6oTr0LDRLN2Zol0dn5X2rRnMuvNfsM1dwXONd7H7XRzKCi1ZkqLFoQaYQDHJJtkuj3Phbu_Uk6Iym-zh9zbWGTqgi_4BfQA1-331mK6edwrRPBIGtUgdkHIclhSLOYIsMn0yIle7aoutPS6Ntco-fMtm4Nd9_TpFFMzZeEqZH0zRW7CRf_CrUS3IqvjpMgJZkEhIIlJYqSUJY42ryPAKgy_PiUI_wlHd8jLKtcC_z_fvCOfc7kE8jZ6vEq1ebKHs0k06kMF4fLTqhcqOHVmPh42RZoGSIVI3HXDpXMObcHcu309_phGMLUSwO4sSBiGAHsZ1eoAR55Y6q_nR2sgOT8MuMjR31PIR7itIKL_F9o54-kkqK_9qoaWUm9IGGqTMukJMSoK3wNWy_pSJRyg3JIRnLygsFOtCv5vODHYBClASZ-wBLbCCgsAH2YdsJPTv4obdSch2tagD1_TdcFPURbm06s19S6jF7ElNq7xSIprpYwDSqL6jZ4_qMYWuVuiiW69gYA1InQWB6_vowNhUHQgnqv8BVlFofG864imhDCc9VMBJR8afEJYJ8DeV535Jugtooon6Caa2hww6Sp_NlJ5DkR8JENXjbB1OydwXzWnZ56Jy8j-qtncSXCHZWcxtB9UIGFNrV1WxavnUzizIsyxSh4RqusOusoGbMKribKZYoL-ivKpb8zLXpY0Lc-SyLBlbGuciCRPPAIpl6n3hnJ4s7dBoxHe4NZ33JG5BCIjD1bEZsyerDBBGdZwYs_KRWXsvEZb7rpeF0ag1XmvPlotsBLoJZ3lN71zwBBNwwx-DqCnWXWo6SLPIVRld_1OoBMVQumOw3aEMaJvbuGb4JqOL1Fj8BpDTJcx0QTlaIaigp-OegTsIBE2WLAJAm9HIwBGUcawKeLQMf3FhlCsC15G5aDIge2AFucrkoZOl1lWb19Miwth-kFgxUlyHqsGxEMzYWKAhkpORYYOSaKgXPuYuc8oDMpVc4SrkYtMVgelj5WHN8PAf99JKymu8JLk5WsSymhnu6-rHe7I8PXqsPtJ2yJVMoWsN34="
+        },
+        {
+          "arguments": "{\"command\":\"cat > /plan.md <<'PLAN_EOF'\\n## Root cause\\n`Header.fromstring` (`astropy/io/fits/header.py`) and `Card.fromstring` (`astropy/io/fits/card.py`) are implemented as if their inputs are always text `str`. On Python 3, passing `bytes` fails because these methods perform text-only operations (e.g., `'' .join(...)`, comparisons to `'CONTINUE'`/`'END'`, and `' ' * n` padding in `_pad`) against byte slices. This contradicts the documented \u201cbyte string\u201d wording and is inconsistent with `Header.fromfile`, which already accepts binary input by decoding ASCII before parsing.\\n\\n## Changes\\n- `astropy/io/fits/header.py` :: `Header.fromstring`\\n  - Add explicit input normalization at the top of the method:\\n    - If `data` is bytes-like (`bytes` at minimum; optionally also `bytearray`/`memoryview`), decode with existing FITS ASCII helper (`decode_ascii`) before any parsing.\\n    - If `sep` is bytes-like, decode it similarly so `data`/`sep` are the same text type during parsing.\\n    - For unsupported input types, raise a clear `TypeError` (rather than letting downstream string ops fail opaquely).\\n  - Keep existing parsing logic unchanged after normalization (card splitting, CONTINUE handling, END detection).\\n  - Update docstring parameter types to state `str or bytes` for `data` (and `sep` if bytes separators are supported by normalization).\\n\\n- `astropy/io/fits/card.py` :: `Card.fromstring`\\n  - Normalize `image` input before `_pad(image)`:\\n    - If `image` is bytes-like, decode via `decode_ascii`.\\n    - If not text/bytes-like, raise `TypeError`.\\n  - This ensures `_pad` always receives text and avoids `bytes + ' '` errors.\\n  - Update docstring to state raw card image may be `str or bytes`.\\n\\n- `astropy/io/fits/tests/test_header.py` :: add targeted regression tests for `Header.fromstring`\\n  - Add a test that builds a valid header string (via `Header.tostring(...)`), encodes to ASCII bytes, and verifies `Header.fromstring(bytes_data, sep=...)` returns an equivalent header.\\n  - Add coverage for both default `sep=''` (raw FITS card stream) and newline-separated input (`sep='\\\\n'`, bytes/newline bytes path), matching current supported modes.\\n\\n- `astropy/io/fits/tests/test_card.py` :: add targeted regression test for `Card.fromstring`\\n  - Add a test that passes an ASCII-encoded 80-char card image to `Card.fromstring` and verifies keyword/value/comment parse equivalence with text input.\\n\\n## Verification\\n1. Run FITS header/card tests focused on new behavior:\\n   - `pytest astropy/io/fits/tests/test_header.py -k fromstring`\\n   - `pytest astropy/io/fits/tests/test_card.py -k fromstring`\\n2. Run the full FITS test subset for regression safety:\\n   - `pytest astropy/io/fits/tests`\\n3. Confirm behavior manually in a REPL-style check:\\n   - `Header.fromstring(header_text.encode('ascii'))` works and equals `Header.fromstring(header_text)`.\\n   - `Card.fromstring(card_text.encode('ascii'))` works and parses identically to text input.\\nPLAN_EOF\"}",
+          "call_id": "call_14mA5zwrw6PAxc6KJW7n227h",
+          "name": "bash",
+          "type": "function_call",
+          "id": "fc_0a8de59b165e593f006a67ff1ec5808197b9bee3d808f08f08",
+          "caller": null,
+          "namespace": null,
+          "status": "completed"
+        }
+      ],
+      "parallel_tool_calls": true,
+      "temperature": 1.0,
+      "tool_choice": "auto",
+      "tools": [
+        {
+          "name": "bash",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The bash command to execute"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "strict": true,
+          "type": "function",
+          "allowed_callers": null,
+          "defer_loading": null,
+          "description": "Execute a bash command",
+          "output_schema": null
+        }
+      ],
+      "top_p": 0.98,
+      "max_output_tokens": null,
+      "previous_response_id": null,
+      "reasoning": {
+        "context": "current_turn",
+        "effort": "high",
+        "mode": "standard",
+        "summary": null
+      },
+      "status": "completed",
+      "text": {
+        "format": {
+          "type": "text"
+        },
+        "verbosity": "medium"
+      },
+      "truncation": "disabled",
+      "usage": {
+        "input_tokens": 8767,
+        "input_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 6656,
+          "text_tokens": null,
+          "cache_write_tokens": 0
+        },
+        "output_tokens": 1840,
+        "output_tokens_details": {
+          "reasoning_tokens": 1068,
+          "text_tokens": null
+        },
+        "total_tokens": 10607,
+        "cost": null
+      },
+      "user": null,
+      "store": true,
+      "background": false,
+      "billing": {
+        "payer": "developer"
+      },
+      "completed_at": 1785200421,
+      "frequency_penalty": 0.0,
+      "max_tool_calls": null,
+      "moderation": null,
+      "presence_penalty": 0.0,
+      "prompt_cache_key": null,
+      "prompt_cache_retention": "24h",
+      "safety_identifier": null,
+      "service_tier": "default",
+      "tool_usage": {
+        "image_gen": {
+          "input_tokens": 0,
+          "input_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "output_tokens": 0,
+          "output_tokens_details": {
+            "image_tokens": 0,
+            "text_tokens": 0
+          },
+          "total_tokens": 0
+        },
+        "web_search": {
+          "num_requests": 0
+        }
+      },
+      "top_logprobs": 0,
+      "extra": {
+        "actions": [
+          {
+            "command": "cat > /plan.md <<'PLAN_EOF'\n## Root cause\n`Header.fromstring` (`astropy/io/fits/header.py`) and `Card.fromstring` (`astropy/io/fits/card.py`) are implemented as if their inputs are always text `str`. On Python 3, passing `bytes` fails because these methods perform text-only operations (e.g., `'' .join(...)`, comparisons to `'CONTINUE'`/`'END'`, and `' ' * n` padding in `_pad`) against byte slices. This contradicts the documented \u201cbyte string\u201d wording and is inconsistent with `Header.fromfile`, which already accepts binary input by decoding ASCII before parsing.\n\n## Changes\n- `astropy/io/fits/header.py` :: `Header.fromstring`\n  - Add explicit input normalization at the top of the method:\n    - If `data` is bytes-like (`bytes` at minimum; optionally also `bytearray`/`memoryview`), decode with existing FITS ASCII helper (`decode_ascii`) before any parsing.\n    - If `sep` is bytes-like, decode it similarly so `data`/`sep` are the same text type during parsing.\n    - For unsupported input types, raise a clear `TypeError` (rather than letting downstream string ops fail opaquely).\n  - Keep existing parsing logic unchanged after normalization (card splitting, CONTINUE handling, END detection).\n  - Update docstring parameter types to state `str or bytes` for `data` (and `sep` if bytes separators are supported by normalization).\n\n- `astropy/io/fits/card.py` :: `Card.fromstring`\n  - Normalize `image` input before `_pad(image)`:\n    - If `image` is bytes-like, decode via `decode_ascii`.\n    - If not text/bytes-like, raise `TypeError`.\n  - This ensures `_pad` always receives text and avoids `bytes + ' '` errors.\n  - Update docstring to state raw card image may be `str or bytes`.\n\n- `astropy/io/fits/tests/test_header.py` :: add targeted regression tests for `Header.fromstring`\n  - Add a test that builds a valid header string (via `Header.tostring(...)`), encodes to ASCII bytes, and verifies `Header.fromstring(bytes_data, sep=...)` returns an equivalent header.\n  - Add coverage for both default `sep=''` (raw FITS card stream) and newline-separated input (`sep='\\n'`, bytes/newline bytes path), matching current supported modes.\n\n- `astropy/io/fits/tests/test_card.py` :: add targeted regression test for `Card.fromstring`\n  - Add a test that passes an ASCII-encoded 80-char card image to `Card.fromstring` and verifies keyword/value/comment parse equivalence with text input.\n\n## Verification\n1. Run FITS header/card tests focused on new behavior:\n   - `pytest astropy/io/fits/tests/test_header.py -k fromstring`\n   - `pytest astropy/io/fits/tests/test_card.py -k fromstring`\n2. Run the full FITS test subset for regression safety:\n   - `pytest astropy/io/fits/tests`\n3. Confirm behavior manually in a REPL-style check:\n   - `Header.fromstring(header_text.encode('ascii'))` works and equals `Header.fromstring(header_text)`.\n   - `Card.fromstring(card_text.encode('ascii'))` works and parses identically to text input.\nPLAN_EOF",
+            "tool_call_id": "call_14mA5zwrw6PAxc6KJW7n227h"
+          }
+        ],
+        "cost": 0.03061905,
+        "timestamp": 1785200421.5047033
+      }
+    },
+    {
+      "extra": {
+        "raw_output": "",
+        "returncode": 0,
+        "timestamp": 1785200421.6259475,
+        "exception_info": ""
+      },
+      "type": "function_call_output",
+      "call_id": "call_14mA5zwrw6PAxc6KJW7n227h",
+      "output": "<returncode>0</returncode>\n<output>\n</output>"
+    },
+    {
+      "role": "exit",
+      "content": "PlanComplete",
+      "extra": {
+        "exit_status": "PlanComplete",
+        "submission": "## Root cause\n`Header.fromstring` (`astropy/io/fits/header.py`) and `Card.fromstring` (`astropy/io/fits/card.py`) are implemented as if their inputs are always text `str`. On Python 3, passing `bytes` fails because these methods perform text-only operations (e.g., `'' .join(...)`, comparisons to `'CONTINUE'`/`'END'`, and `' ' * n` padding in `_pad`) against byte slices. This contradicts the documented \u201cbyte string\u201d wording and is inconsistent with `Header.fromfile`, which already accepts binary input by decoding ASCII before parsing.\n\n## Changes\n- `astropy/io/fits/header.py` :: `Header.fromstring`\n  - Add explicit input normalization at the top of the method:\n    - If `data` is bytes-like (`bytes` at minimum; optionally also `bytearray`/`memoryview`), decode with existing FITS ASCII helper (`decode_ascii`) before any parsing.\n    - If `sep` is bytes-like, decode it similarly so `data`/`sep` are the same text type during parsing.\n    - For unsupported input types, raise a clear `TypeError` (rather than letting downstream string ops fail opaquely).\n  - Keep existing parsing logic unchanged after normalization (card splitting, CONTINUE handling, END detection).\n  - Update docstring parameter types to state `str or bytes` for `data` (and `sep` if bytes separators are supported by normalization).\n\n- `astropy/io/fits/card.py` :: `Card.fromstring`\n  - Normalize `image` input before `_pad(image)`:\n    - If `image` is bytes-like, decode via `decode_ascii`.\n    - If not text/bytes-like, raise `TypeError`.\n  - This ensures `_pad` always receives text and avoids `bytes + ' '` errors.\n  - Update docstring to state raw card image may be `str or bytes`.\n\n- `astropy/io/fits/tests/test_header.py` :: add targeted regression tests for `Header.fromstring`\n  - Add a test that builds a valid header string (via `Header.tostring(...)`), encodes to ASCII bytes, and verifies `Header.fromstring(bytes_data, sep=...)` returns an equivalent header.\n  - Add coverage for both default `sep=''` (raw FITS card stream) and newline-separated input (`sep='\\n'`, bytes/newline bytes path), matching current supported modes.\n\n- `astropy/io/fits/tests/test_card.py` :: add targeted regression test for `Card.fromstring`\n  - Add a test that passes an ASCII-encoded 80-char card image to `Card.fromstring` and verifies keyword/value/comment parse equivalence with text input.\n\n## Verification\n1. Run FITS header/card tests focused on new behavior:\n   - `pytest astropy/io/fits/tests/test_header.py -k fromstring`\n   - `pytest astropy/io/fits/tests/test_card.py -k fromstring`\n2. Run the full FITS test subset for regression safety:\n   - `pytest astropy/io/fits/tests`\n3. Confirm behavior manually in a REPL-style check:\n   - `Header.fromstring(header_text.encode('ascii'))` works and equals `Header.fromstring(header_text)`.\n   - `Card.fromstring(card_text.encode('ascii'))` works and parses identically to text input."
+      }
+    }
+  ],
+  "trajectory_format": "mini-swe-agent-1.1"
+}
