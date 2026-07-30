@@ -55,7 +55,7 @@ import litellm
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 load_dotenv()
 
@@ -126,9 +126,18 @@ def _is_edit_turn(msg: dict) -> bool:
 
 def decide_phase(messages: list[dict]) -> tuple[str, str, str]:
     """Return (phase, model, reason) from the conversation so far.
-    messages are in the internal (OpenAI chat) shape."""
+    messages are in the internal (OpenAI chat) shape.
+
+    Task boundary: in a continuous chat (Cursor/Claude Code keep one long
+    conversation across many tasks), we count only turns SINCE the last genuine
+    user instruction — tool results arrive as role:"tool", so the last role:"user"
+    message marks the current task's start and re-arms the planning phase."""
+    start = 0
+    for i, m in enumerate(messages):
+        if m.get("role") == "user":
+            start = i
     n_assistant, edited = 0, False
-    for m in messages:
+    for m in messages[start:]:
         if m.get("role") == "assistant":
             n_assistant += 1
             if _is_edit_turn(m):
@@ -230,12 +239,39 @@ def _headers(meta: dict) -> dict:
 
 # ── OpenAI-compatible: Cursor / Codex / aider / cline / continue / ... ──────────
 
+def _sse_chat(result: dict, model: str):
+    """Emit an OpenAI chat.completion.chunk SSE stream for an already-computed
+    result. (Compatibility streaming: the client's stream code path works; we buffer
+    the model call then emit. Token-by-token relay is a future enhancement.)"""
+    cid = f"chatcmpl-{uuid.uuid4().hex}"
+    base = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()), "model": model}
+
+    def chunk(delta, finish=None):
+        return "data: " + json.dumps({**base, "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}) + "\n\n"
+
+    def gen():
+        yield chunk({"role": "assistant"})
+        if result["text"]:
+            yield chunk({"content": result["text"]})
+        for i, tc in enumerate(result["tool_calls"]):
+            yield chunk({"tool_calls": [{"index": i, "id": tc["id"], "type": "function",
+                                         "function": {"name": tc["function"]["name"],
+                                                      "arguments": tc["function"]["arguments"]}}]})
+        yield chunk({}, finish="tool_calls" if result["tool_calls"] else "stop")
+        yield "data: [DONE]\n\n"
+    return gen()
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     body = await request.json()
     messages = body.get("messages", [])
+    stream = body.get("stream", False)
     try:
         result, meta = route(messages, body.get("tools"))
+        if stream:
+            return StreamingResponse(_sse_chat(result, meta["model"]),
+                                     media_type="text/event-stream", headers=_headers(meta))
         msg: dict = {"role": "assistant", "content": result["text"] or None}
         if result["tool_calls"]:
             msg["tool_calls"] = result["tool_calls"]
