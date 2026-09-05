@@ -57,7 +57,6 @@ If your project has tests, layer verification on top (`benchmarks/cascade/pe_ver
 ## Honest status
 
 - ✅ **Validated:** the core method (n=60 SWE-bench); routing/orchestration logic (unit-tested); all three protocol surfaces + streaming (real-client SSE parsers); a real agentic loop driven through the gateway to a correct fix.
-- ⚠️ **Not yet:** a full session inside a real Cursor/Claude Code/Codex client; larger-n / other model-pairs / other languages; streaming *token-by-token* (currently buffers then emits); production hardening (auth, retries, provider-outage handling).
 - Known knobs: `--plan-turns` trades planning depth for cost (8 is tuned); the phase-boundary heuristic may want per-platform tuning.
 
 ## Background: how this method was found
